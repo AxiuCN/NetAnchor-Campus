@@ -411,3 +411,28 @@ IPC 鉴权实现要点：服务端用 `GetNamedPipeClientProcessId` 取调用者
 - `test_portal_change_with_password_rebinds_ciphertext`：交密码后密文变化且可解
 - `test_changing_portal_invalidates_stored_password`：手工改文件 → 密码不可用
 - `test_secret_context_binding`：不同上下文无法解密
+
+## 21. 未完成项与后续计划
+
+### P6 真机验证（未开始）
+
+在校园网所在机器上执行：真实登录、断网 → 自动重连、日志核对。这是唯一还没做、且无法在开发机上替代的验证。
+
+### P7 安装包（计划中，未实现）
+
+**现状**：交付形式是 onedir 目录 + 管理员终端执行 `NetAnchor.Cli.exe install`。功能完整，但分发体验是"开发者式"的：
+
+- 需要手动复制整个目录
+- 需要先开管理员终端
+- 控制面板"程序和功能"里没有卸载项
+- 没有安装向导、没有单文件分发
+
+**计划**：新增 `NetAnchor.Setup.exe`（PyInstaller onefile 内嵌 payload），双击 → 自身请求 UAC → 解压到临时目录 → 复用 `cli.install()`；同时写注册表卸载项。代价是安装器体积约 100 MB。
+
+**未定**：是否值得为此增体；也可能维持 CLI 方式，只把说明写清楚。
+
+### 其他待办
+
+- 长时间运行观察（数天）与日志轮转验证
+- 杀软对服务形态二进制的误报观察
+- 门户接口变化后的适配策略（当前以参数外置为主）
