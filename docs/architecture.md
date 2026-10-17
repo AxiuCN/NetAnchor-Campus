@@ -21,7 +21,7 @@
 | D5 | PyInstaller `onedir`，多个 exe 共享 `_internal` | 体积可接受（约 200 MB），启动快；裁剪只删确定无用的资源 |
 | D6 | 验证码同轮换码重试（默认 3 次） | 单张识别成功率不足；且校验是消耗性的 |
 | D7 | 内存占用作为独立指标；OCR 按需跑在独立子进程 | 实测：进程内驻留使服务 WS 从 25.7 MB 升到 72.7 MB（峰值 92.5 MB、Private 144 MB）；子进程模式下服务稳定在 25.9 MB，工作进程峰值 87.2 MB 且只在识别期间存在 |
-| D8 | 安装到 `C:\Program Files\NetAnchor-Campus\`；托盘自启走 `HKCU\...\Run`（用户登录后） | 服务随开机启动；托盘随用户登录启动，两者解耦 |
+| D8 | 安装到 `C:\Program Files\NetAnchor-Campus\`；托盘自启设计为 `HKCU\...\Run`（**尚未实现**，见 §21） | 服务随开机启动；托盘随用户登录启动，两者解耦 |
 
 ## 3. 组件与部署形态
 
@@ -133,7 +133,7 @@ C:\Program Files\NetAnchor-Campus\
 
 状态取值：`ONLINE` / `OFFLINE` / `RECONNECTING` / `PORTAL_UNREACHABLE` / `CONFIG_MISSING` / `STOPPED`。
 
-错误码：`forbidden`（写操作权限不足）、`invalid_request`（缺 cmd）、`unknown_command`、`invalid_config`（配置校验失败）、`bad_frame`（帧非法）、`internal`（处理器异常）。
+错误码：`reauth_required`（改门户地址未同时提交密码）、`invalid_request`（缺 cmd）、`unknown_command`、`invalid_config`（配置校验失败）、`bad_frame`（帧非法）、`internal`（处理器异常）。
 
 ## 7. 服务生命周期与恢复
 
@@ -303,7 +303,7 @@ NetAnchor-Campus/
 | S2 监控态内存（30 s 轮询，无 OCR） | WorkingSet 28.9 MB / Private 19.0 MB |
 | S2−S1 | +7.7 MB（低于 30 MB 阈值，但 S3 的 OCR 增量待 P2 实测） |
 
-遗留：S3/S4 内存、托盘退出存活 → 分别在 P2、P4 验证；重启自启的真实重启验证 → P5（正式安装器就位后）。
+遗留：S3/S4 内存、托盘退出存活已在 P2、P4 验证；重启自启已于 P5 由用户重启验证（见 §19）。
 
 ## 16. P2 实测结论（2026-10-18）
 
@@ -332,12 +332,12 @@ NetAnchor-Campus/
 | 原子写 | 覆盖前生成 `config.json.bak` |
 | IPC 帧 | 长度前缀 JSON；拒绝截断、超长声明、非 JSON、非对象 |
 | IPC 往返 | 本地管道实测 `status` / `creds.set` 成功 |
-| 授权 | 注入式测试：非管理员只能读状态，5 个写命令全部返回 `forbidden` |
+| 授权（P3 时点） | 注入式测试：非管理员只能读状态，5 个写命令全部返回 `forbidden`；该策略已在 §20 修订为"读写都开放，凭据绑定地址" |
 | 真实令牌判定 | 提权进程 `True`；未提权的 `explorer.exe` 进程 `False` |
 
 安全边界说明：Machine DPAPI 的作用域是整机，任何账户只要能读到密文就能解密，**真正的保护来自文件 ACL**。测试里同时断言了 ACL 只含两个 SID，而不是只测"能解密"。
 
-IPC 鉴权实现要点：服务端用 `GetNamedPipeClientProcessId` 取调用者 PID，再读其进程令牌的 `TokenGroups`，检查 `BUILTIN\Administrators` **且组处于启用状态** —— UAC 过滤令牌里该组是 deny-only，因此未提权的托盘不会被误判为管理员。
+IPC 鉴权实现要点：服务端用 `GetNamedPipeClientProcessId` 取调用者 PID，再读其进程令牌的 `TokenGroups` 判断调用者是否提权。§20 之后该结果**只写审计日志，不再作为放行条件**；判断时要求 `BUILTIN\Administrators` 组处于启用状态（UAC 过滤令牌里该组是 deny-only）。
 
 ## 18. P4 实测结论（2026-10-18）
 
@@ -418,7 +418,7 @@ IPC 鉴权实现要点：服务端用 `GetNamedPipeClientProcessId` 取调用者
 
 在校园网所在机器上执行：真实登录、断网 → 自动重连、日志核对。这是唯一还没做、且无法在开发机上替代的验证。
 
-### P7 安装包（计划中，未实现）
+### P7 安装包（仅为候选，未定）
 
 **现状**：交付形式是 onedir 目录 + 管理员终端执行 `NetAnchor.Cli.exe install`。功能完整，但分发体验是"开发者式"的：
 
@@ -427,9 +427,15 @@ IPC 鉴权实现要点：服务端用 `GetNamedPipeClientProcessId` 取调用者
 - 控制面板"程序和功能"里没有卸载项
 - 没有安装向导、没有单文件分发
 
-**计划**：新增 `NetAnchor.Setup.exe`（PyInstaller onefile 内嵌 payload），双击 → 自身请求 UAC → 解压到临时目录 → 复用 `cli.install()`；同时写注册表卸载项。代价是安装器体积约 100 MB。
+**候选方案（未验证，不作为承诺）**：`NetAnchor.Setup.exe`（PyInstaller onefile 内嵌 payload），双击 → 自身请求 UAC → 解压到临时目录 → 复用 `cli.install()`；同时写注册表卸载项。
 
-**未定**：是否值得为此增体；也可能维持 CLI 方式，只把说明写清楚。
+**尚未验证的点**：安装器体积、UAC 与解压时序、失败回滚、卸载项的维护、杀软误报。
+
+**当前结论**：**先维持 CLI 安装方式**，等 P6 真机验收有结论后再评估是否值得投入。不为了形式上的完整而叠加一套未经验证的安装器。
+
+### 托盘开机自启（未实现）
+
+D8 定的是"托盘随用户登录启动，走 `HKCU\...\Run`"，但**代码里还没有实现**：`ui/tray.py` 目前没有写注册表的逻辑，托盘需要手动启动。后续要么补实现（并用 §五.7 的方式说明它是程序自身能力），要么删掉这条设计。
 
 ### 其他待办
 

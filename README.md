@@ -44,8 +44,8 @@
 
 两种方式：
 
-- 托盘菜单 → **设置…**（写操作需要管理员权限；若提示 `forbidden`，以管理员身份运行托盘）
-- 直接编辑 `C:\ProgramData\NetAnchor-Campus\config.json`（需要管理员）
+- 托盘菜单 → **设置…**（普通权限即可保存；修改门户地址时会要求重新输入密码）
+- 直接编辑 `C:\ProgramData\NetAnchor-Campus\config.json`（文件 ACL 只给管理员，需要用管理员权限编辑）
 
 关键配置项：
 
