@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -12,6 +13,10 @@ from .errors import NetAnchorError, NetworkError, ProtocolError
 from .portal import PortalClient
 
 logger = logging.getLogger(__name__)
+
+
+class _Cancelled(Exception):
+    """内部信号：停止事件已置位，放弃本轮认证。"""
 
 
 class State(str, Enum):
@@ -46,6 +51,8 @@ class Monitor:
         check_online: Callable[[], bool],
         sleep: Callable[[float], None] = time.sleep,
         on_state: Callable[[CycleResult], None] | None = None,
+        stop_event: threading.Event | None = None,
+        wake_event: threading.Event | None = None,
     ) -> None:
         self._config = config
         self._portal = portal
@@ -53,6 +60,8 @@ class Monitor:
         self._check_online = check_online
         self._sleep = sleep
         self._on_state = on_state
+        self._stop = stop_event or threading.Event()
+        self._wake = wake_event
         self._consecutive = 0
         self._last_detail = ""
         self._repeat = 0
@@ -60,6 +69,9 @@ class Monitor:
     @property
     def consecutive_failures(self) -> int:
         return self._consecutive
+
+    def _cancelled(self) -> bool:
+        return self._stop.is_set()
 
     # ---- 退避 ----
     def compute_backoff(self, consecutive: int | None = None) -> float:
@@ -72,6 +84,9 @@ class Monitor:
 
     # ---- 单轮 ----
     def cycle(self) -> CycleResult:
+        if self._cancelled():
+            return CycleResult(State.STOPPED, "已取消", self._consecutive)
+
         if self._check_online():
             self._mark_ok()
             return CycleResult(State.ONLINE, "", 0)
@@ -87,9 +102,15 @@ class Monitor:
         if candidate is None:
             return self._fail(State.PORTAL_UNREACHABLE, "所有门户候选均不可达")
 
-        failure = self._authenticate(candidate)
+        try:
+            failure = self._authenticate(candidate)
+        except _Cancelled:
+            return CycleResult(State.STOPPED, "已取消", self._consecutive)
+
         if failure is None:
             self._sleep(2)
+            if self._cancelled():
+                return CycleResult(State.STOPPED, "已取消", self._consecutive)
             if self._check_online():
                 self._mark_ok()
                 return CycleResult(State.ONLINE, f"{candidate.host} 登录成功", 0)
@@ -97,17 +118,24 @@ class Monitor:
         return self._fail(State.RECONNECTING, failure)
 
     def _authenticate(self, candidate) -> str | None:
-        """返回 None 表示登录成功；否则返回失败原因。"""
+        """返回 None 表示登录成功；否则返回失败原因。被取消时抛 _Cancelled。"""
         last_failure = "未进入登录流程"
         for attempt in range(1, self._config.monitor.max_captcha_attempts + 1):
+            if self._cancelled():
+                raise _Cancelled
             try:
                 image = self._portal.fetch_captcha(candidate)
+                if self._cancelled():
+                    raise _Cancelled
                 text = self._recognize(image)
             except ProtocolError as exc:
                 last_failure = f"取码/识别异常: {exc}"
                 continue
             except NetworkError:
                 raise
+
+            if self._cancelled():
+                raise _Cancelled
 
             if len(text) != 4:
                 # 位数不对时直接换一张，不消耗服务器的校验机会
@@ -117,6 +145,9 @@ class Monitor:
             if not self._portal.check_captcha(candidate, text):
                 last_failure = "验证码校验未通过"
                 continue
+
+            if self._cancelled():
+                raise _Cancelled
 
             result = self._portal.login(candidate, self._config.effective_username, self._config.account.password)
             if result.ok:
@@ -146,8 +177,9 @@ class Monitor:
         self._repeat = 0
 
     # ---- 常驻循环 ----
-    def run(self, stop_event, wake_event=None) -> None:
-        while not stop_event.is_set():
+    def run(self) -> None:
+        """使用构造时注入的 stop/wake 事件；停止事件置位后尽快退出。"""
+        while not self._stop.is_set():
             try:
                 result = self.cycle()
             except NetworkError as exc:
@@ -163,7 +195,7 @@ class Monitor:
             if self._on_state:
                 self._on_state(result)
 
-            if stop_event.is_set():
+            if self._stop.is_set():
                 break
 
             if result.state is State.ONLINE:
@@ -171,11 +203,11 @@ class Monitor:
             else:
                 delay = self.compute_backoff()
             logger.debug("下一轮 %.0f 秒后（状态 %s）", delay, result.state.value)
-            if wake_event is not None:
+            if self._wake is not None:
                 # 等待期间可被「立即重连」或「停止」唤醒
-                if wake_event.wait(delay):
-                    wake_event.clear()
+                if self._wake.wait(delay):
+                    self._wake.clear()
             else:
-                stop_event.wait(delay)
+                self._stop.wait(delay)
         if self._on_state:
             self._on_state(CycleResult(State.STOPPED, "", self._consecutive))

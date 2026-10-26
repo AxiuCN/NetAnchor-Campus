@@ -1,3 +1,4 @@
+import threading
 import time
 import uuid
 
@@ -134,5 +135,61 @@ def test_reload_applies_new_interval(store):
         store.save(config)
         runtime.reload()
         assert runtime.config.monitor.check_interval_seconds == 7
+    finally:
+        runtime.stop()
+
+
+def test_stop_with_blocking_ocr_keeps_thread_and_blocks_restart(store):
+    """#2：停止超时后不得丢弃活线程，也不得再起第二个认证线程。"""
+    entered = threading.Event()
+    release = threading.Event()
+    online = {"value": False}
+
+    def recognize(_image):
+        entered.set()
+        release.wait(10)
+        return "1234"
+
+    pipe = "\\\\.\\pipe\\NaRuntime-" + uuid.uuid4().hex
+    runtime = ServiceRuntime(
+        store=store,
+        portal=FakePortal(),
+        recognize=recognize,
+        check_online=lambda: online["value"],
+        pipe_name=pipe,
+        stop_grace_seconds=2.0,
+    )
+    runtime.start()
+    try:
+        assert entered.wait(5), "识别器没有被调用"
+        first_thread = runtime._monitor_thread
+
+        assert runtime._handle_stop() == "stopping"
+        assert runtime._monitor_thread is first_thread
+        assert first_thread.is_alive()
+
+        # 旧线程未退出时，启动必须被拒绝，且不能替换线程对象
+        assert runtime._handle_start() == "stopping"
+        assert runtime._monitor_thread is first_thread
+
+        release.set()
+        assert wait_until(lambda: runtime._monitor_thread is None, timeout=10)
+        assert runtime.status.state == "stopped"
+
+        online["value"] = True
+        assert runtime._handle_start() == "running"
+        assert wait_until(lambda: runtime.status.state == "online", timeout=10)
+    finally:
+        release.set()
+        runtime.stop()
+
+
+def test_stop_when_idle_returns_stopped(store):
+    runtime = make_runtime(store)
+    runtime.start()
+    try:
+        assert wait_until(lambda: runtime.status.state == "online")
+        assert runtime._handle_stop() == "stopped"
+        assert runtime.status.state == "stopped"
     finally:
         runtime.stop()

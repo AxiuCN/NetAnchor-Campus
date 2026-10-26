@@ -159,8 +159,35 @@ def test_run_loop_emits_states_and_stops():
         check_online=lambda: True,
         sleep=lambda _s: None,
         on_state=on_state,
+        stop_event=stop,
     )
-    monitor.run(stop)
+    monitor.run()
     assert seen[0] is State.ONLINE
     # 循环结束时补发 STOPPED
     assert seen[-1] is State.STOPPED
+
+
+def test_cancelled_before_cycle_returns_stopped():
+    stop = threading.Event()
+    stop.set()
+    portal = FakePortal()
+    monitor = Monitor(make_config(), portal, lambda _img: "1234", lambda: False, stop_event=stop)
+    result = monitor.cycle()
+    assert result.state is State.STOPPED
+    assert portal.probe_calls == 0
+
+
+def test_cancel_during_validation_skips_login():
+    stop = threading.Event()
+    portal = FakePortal(check_ok=True)
+
+    def check_then_cancel(candidate, text):
+        portal.check_calls += 1
+        stop.set()
+        return True
+
+    portal.check_captcha = check_then_cancel
+    monitor = Monitor(make_config(), portal, lambda _img: "1234", lambda: False, stop_event=stop)
+    result = monitor.cycle()
+    assert result.state is State.STOPPED
+    assert portal.login_calls == 0

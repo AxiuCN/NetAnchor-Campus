@@ -43,6 +43,7 @@ class ServiceRuntime:
         console: bool = False,
         pipe_name: str = PIPE_NAME,
         version: str = __version__,
+        stop_grace_seconds: float = 35.0,
     ) -> None:
         self._store = store or ConfigStore()
         self._http_override = http
@@ -52,6 +53,8 @@ class ServiceRuntime:
         self._console = console
         self._pipe_name = pipe_name
         self._version = version
+        # OCR 子进程超时 30 s，停止/热加载要等它返回，否则会留下活线程
+        self._stop_grace = stop_grace_seconds
 
         self.status = RuntimeStatus(state="starting")
         self._config = Config()
@@ -97,7 +100,9 @@ class ServiceRuntime:
         )
 
     def stop(self) -> None:
-        self._stop_monitor()
+        state = self._stop_monitor(wait=self._stop_grace)
+        if state == "stopping":
+            self._logger.error("监控线程在 %.0f 秒内未退出，仍保留引用后再停止服务", self._stop_grace)
         if self._server:
             self._server.stop()
             self._server.join(timeout=3)
@@ -115,14 +120,19 @@ class ServiceRuntime:
         return self._config
 
     def reload(self) -> None:
-        """配置变更后热加载：重建监控器并重启监控线程。"""
+        """配置变更后热加载：先确认旧线程退出，再重建监控器并启动。"""
         try:
-            self._config = self._store.load()
+            new_config = self._store.load()
         except Exception as exc:
             self._logger.error("重载配置失败，保留旧配置: %s", exc)
             return
+
+        if self._stop_monitor(wait=self._stop_grace) != "stopped":
+            self._logger.error("旧监控线程未退出，跳过本次热加载")
+            return
+
+        self._config = new_config
         self._apply_log_level()
-        self._stop_monitor()
         self._build_monitor()
         self._start_monitor()
         self._logger.info("配置已重载")
@@ -154,6 +164,8 @@ class ServiceRuntime:
             self._recognize,
             self._check,
             on_state=self._on_state,
+            stop_event=self._stop_event,
+            wake_event=self._wake_event,
         )
 
     def _check_online(self) -> bool:
@@ -167,45 +179,63 @@ class ServiceRuntime:
             return False
 
     # ---- 监控线程 ----
-    def _start_monitor(self) -> None:
-        if self._monitor_thread and self._monitor_thread.is_alive():
-            return
-        self._stop_event = threading.Event()
-        self._wake_event = threading.Event()
+    def _start_monitor(self) -> str:
+        thread = self._monitor_thread
+        if thread is not None and thread.is_alive():
+            # 旧线程还没退出（例如卡在 OCR），绝不再起一个
+            return "stopping"
+        self._stop_event.clear()
+        self._wake_event.clear()
         assert self._monitor is not None
         self._monitor_thread = threading.Thread(
-            target=self._monitor.run,
-            args=(self._stop_event, self._wake_event),
+            target=self._run_monitor,
             name="MonitorLoop",
             daemon=True,
         )
         self._monitor_thread.start()
+        return "running"
 
-    def _stop_monitor(self) -> None:
+    def _run_monitor(self) -> None:
+        try:
+            self._monitor.run()
+        finally:
+            if self._monitor_thread is threading.current_thread():
+                self._monitor_thread = None
+
+    def _stop_monitor(self, wait: float = 1.0) -> str:
+        """请求停止；`wait` 秒内没退出则返回 "stopping" 并保留线程引用。"""
+        thread = self._monitor_thread
+        if thread is None or not thread.is_alive():
+            self._monitor_thread = None
+            self.status.state = State.STOPPED.value
+            return "stopped"
+
         self._stop_event.set()
         self._wake_event.set()
-        thread = self._monitor_thread
-        if thread and thread.is_alive():
-            thread.join(timeout=10)
+        thread.join(timeout=wait)
+        if thread.is_alive():
+            return "stopping"  # 引用必须保留，防止重复启动
         self._monitor_thread = None
+        self.status.state = State.STOPPED.value
+        return "stopped"
 
     # ---- 动作 ----
     def _handle_start(self) -> str:
-        self._start_monitor()
-        return "running"
+        return self._start_monitor()
 
     def _handle_stop(self) -> str:
-        self._stop_monitor()
-        self.status.state = State.STOPPED.value
-        self._logger.info("监控已手动停止")
-        return "stopped"
+        result = self._stop_monitor(wait=1.0)
+        if result == "stopped":
+            self._logger.info("监控已手动停止")
+        else:
+            self._logger.warning("监控正在停止，旧线程尚未退出")
+        return result
 
     def _handle_reconnect(self) -> str:
-        if not (self._monitor_thread and self._monitor_thread.is_alive()):
-            self._start_monitor()
-            return "started"
-        self._wake_event.set()
-        return "queued"
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            self._wake_event.set()
+            return "queued"
+        return self._start_monitor()
 
     # ---- 状态同步 ----
     def _on_state(self, result: CycleResult) -> None:
