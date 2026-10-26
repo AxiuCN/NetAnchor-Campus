@@ -12,8 +12,9 @@ def _prepare(tmp_path, monkeypatch, state="running"):
     backup = tmp_path / "install.bak"
     backup.mkdir()
 
-    monkeypatch.setattr(cli, "INSTALL_DIR", install)
-    monkeypatch.setattr(cli, "BACKUP_DIR", backup)
+    monkeypatch.setattr(cli, "installed_dir", lambda: install)
+    monkeypatch.setattr(cli, "backup_dir_for", lambda _target: backup)
+    monkeypatch.setattr(cli, "_forget_install_dir", lambda: None)
     monkeypatch.setattr(cli, "query_state", lambda *_a, **_k: state)
 
     events = []

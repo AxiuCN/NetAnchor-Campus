@@ -27,18 +27,21 @@
 
 ```powershell
 .\NetAnchor.Cli.exe install
+# 或安装到其它目录
+.\NetAnchor.Cli.exe install --dir 'D:\Program Files\NetAnchor-Campus'
 ```
 
 > 目前没有双击安装器；`install` 需要从管理员终端发起。安装包（setup.exe）尚未实现。
+> 安装目录会记录在服务里，之后 `upgrade` / `uninstall` / `status` 都以服务实际注册的路径为准。
 
 安装会：
 
-1. 复制文件到 `C:\Program Files\NetAnchor-Campus\`
+1. 复制文件到安装目录（默认 `C:\Program Files\NetAnchor-Campus\`，可用 `--dir` 指定）
 2. 在 `C:\ProgramData\NetAnchor-Campus\` 生成配置模板
 3. 注册服务 `NetAnchorCampus`（自动启动、失败自动重启）
 4. 启动服务
 
-安装完成后启动托盘：`C:\Program Files\NetAnchor-Campus\NetAnchor.Tray.exe`。
+安装完成后启动托盘：`<安装目录>\NetAnchor.Tray.exe`。
 
 ## 配置
 

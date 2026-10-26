@@ -17,8 +17,8 @@ def _prepare(tmp_path, monkeypatch):
     (install / "old.txt").write_text("old", encoding="utf-8")
 
     backup = tmp_path / "install.bak"
-    monkeypatch.setattr(cli, "INSTALL_DIR", install)
-    monkeypatch.setattr(cli, "BACKUP_DIR", backup)
+    monkeypatch.setattr(cli, "installed_dir", lambda: install)
+    monkeypatch.setattr(cli, "backup_dir_for", lambda _target: backup)
 
     calls = {"stopped": 0, "started": 0}
     monkeypatch.setattr(cli, "_stop", lambda: calls.__setitem__("stopped", calls["stopped"] + 1))

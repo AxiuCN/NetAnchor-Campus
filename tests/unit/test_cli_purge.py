@@ -13,9 +13,10 @@ def _prepare(tmp_path, monkeypatch):
 
     store = ConfigStore(data_dir, apply_acl=False)
     monkeypatch.setattr(cli, "ConfigStore", lambda: store)
-    monkeypatch.setattr(cli, "INSTALL_DIR", tmp_path / "install-absent")
-    monkeypatch.setattr(cli, "BACKUP_DIR", tmp_path / "backup-absent")
+    monkeypatch.setattr(cli, "installed_dir", lambda: tmp_path / "install-absent")
+    monkeypatch.setattr(cli, "backup_dir_for", lambda _target: tmp_path / "backup-absent")
     monkeypatch.setattr(cli, "query_state", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "ConfigStore", lambda: store)
     monkeypatch.setattr(cli, "_close_running_clients", lambda: None)
     return data_dir
 

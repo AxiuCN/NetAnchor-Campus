@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+import winreg
 from pathlib import Path
 
 import win32service
@@ -19,8 +20,10 @@ from .config_store import ConfigStore
 from .service_main import SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME, SERVICE_NAME
 
 SERVICE_EXE_NAME = "NetAnchor.Service.exe"
-INSTALL_DIR = Path(r"C:\Program Files\NetAnchor-Campus")
-BACKUP_DIR = INSTALL_DIR.with_name(INSTALL_DIR.name + ".bak")
+# 仅作为"未指定 --dir 时"的默认值；实际安装位置以服务注册的 ImagePath 为准
+DEFAULT_INSTALL_DIR = Path(r"C:\Program Files\NetAnchor-Campus")
+APP_REG_KEY = r"SOFTWARE\NetAnchor-Campus"
+REG_INSTALL_DIR = "InstallDir"
 
 STATE_NAMES = {
     win32service.SERVICE_STOPPED: "stopped",
@@ -43,6 +46,71 @@ def default_source() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[2] / "dist" / "NetAnchor-Campus"
+
+
+def parse_image_path(raw: str) -> Path | None:
+    """解析服务 ImagePath（可能带引号或额外参数）。
+
+    注册表里的路径若含空格通常有引号；没有引号时以 `.exe` 结尾判定为完整路径，
+    否则按空格切掉后面的参数。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if text.startswith('"'):
+        end = text.find('"', 1)
+        if end == -1:
+            return None
+        return Path(text[1:end])
+    if text.lower().endswith(".exe"):
+        return Path(text)
+    return Path(text.split(" ", 1)[0])
+
+
+def _service_image_path(name: str = SERVICE_NAME) -> Path | None:
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, rf"SYSTEM\CurrentControlSet\Services\{name}") as key:
+            value, _ = winreg.QueryValueEx(key, "ImagePath")
+    except OSError:
+        return None
+    return parse_image_path(str(value))
+
+
+def _remembered_install_dir() -> Path | None:
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, APP_REG_KEY) as key:
+            value, _ = winreg.QueryValueEx(key, REG_INSTALL_DIR)
+    except OSError:
+        return None
+    return Path(str(value)) if value else None
+
+
+def _remember_install_dir(path: Path) -> None:
+    with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, APP_REG_KEY, 0, winreg.KEY_WRITE) as key:
+        winreg.SetValueEx(key, REG_INSTALL_DIR, 0, winreg.REG_SZ, str(path))
+
+
+def _forget_install_dir() -> None:
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, APP_REG_KEY, 0, winreg.KEY_ALL_ACCESS) as key:
+            winreg.DeleteValue(key, REG_INSTALL_DIR)
+    except OSError:
+        return
+
+
+def installed_dir() -> Path:
+    """已安装目录：以服务 ImagePath 为准，其次用安装时记录，最后回退默认值。"""
+    image = _service_image_path()
+    if image is not None:
+        return image.parent
+    remembered = _remembered_install_dir()
+    if remembered is not None:
+        return remembered
+    return DEFAULT_INSTALL_DIR
+
+
+def backup_dir_for(install_dir: Path) -> Path:
+    return install_dir.with_name(install_dir.name + ".bak")
 
 
 def _scm_manager(access: int):
@@ -204,7 +272,7 @@ def _delete_service() -> None:
 
 # ---------------- 命令 ----------------
 
-def install(source: Path | None = None, start: bool = True) -> int:
+def install(source: Path | None = None, start: bool = True, target_dir: Path | None = None) -> int:
     if query_state() is not None:
         print("服务已存在，请使用 upgrade", file=sys.stderr)
         return 1
@@ -214,15 +282,24 @@ def install(source: Path | None = None, start: bool = True) -> int:
         print(f"未找到 {exe}", file=sys.stderr)
         return 1
 
-    print(f"复制文件: {src} -> {INSTALL_DIR}")
-    _copy_tree(src, INSTALL_DIR)
+    target = Path(target_dir) if target_dir else DEFAULT_INSTALL_DIR
+    if not target.is_absolute():
+        print(f"安装目录必须是绝对路径: {target}", file=sys.stderr)
+        return 1
+    if target.resolve() == src:
+        print("安装目录不能与发布包目录相同", file=sys.stderr)
+        return 1
+
+    print(f"复制文件: {src} -> {target}")
+    _copy_tree(src, target)
     store = ConfigStore()
     path = store.init_template()
     print(f"配置模板: {path}")
 
-    _create_service(INSTALL_DIR / SERVICE_EXE_NAME)
+    _create_service(target / SERVICE_EXE_NAME)
     _set_failure_actions()
-    print(f"服务已创建: {SERVICE_NAME}")
+    _remember_install_dir(target)
+    print(f"服务已创建: {SERVICE_NAME}（安装目录 {target}）")
     if start:
         _start()
     return 0
@@ -238,6 +315,9 @@ def upgrade(source: Path | None = None) -> int:
         return 1
 
     was_running = query_state() == "running"
+    target = installed_dir()
+    backup = backup_dir_for(target)
+    print(f"安装目录: {target}")
 
     print("停止服务")
     _stop()
@@ -247,31 +327,31 @@ def upgrade(source: Path | None = None) -> int:
     # 从停止服务开始的一切失败都必须能回到"升级前的运行状态"
     backup_ready = False
     try:
-        if BACKUP_DIR.exists():
-            _remove_tree(BACKUP_DIR)
-        shutil.copytree(INSTALL_DIR, BACKUP_DIR)
+        if backup.exists():
+            _remove_tree(backup)
+        shutil.copytree(target, backup)
         backup_ready = True
-        print(f"已备份到 {BACKUP_DIR}")
+        print(f"已备份到 {backup}")
 
-        _copy_tree(src, INSTALL_DIR)
+        _copy_tree(src, target)
         _start()
     except Exception as exc:  # noqa: BLE001
         print(f"升级失败，正在恢复: {exc}", file=sys.stderr)
-        _restore_previous_install(backup_ready, was_running)
+        _restore_previous_install(target, backup, backup_ready, was_running)
         return 1
     print("升级完成")
     return 0
 
 
-def _restore_previous_install(backup_ready: bool, was_running: bool) -> None:
+def _restore_previous_install(target: Path, backup: Path, backup_ready: bool, was_running: bool) -> None:
     """升级失败后的恢复：有备份就还原文件，再把服务起回升级前的状态。"""
-    if backup_ready and BACKUP_DIR.exists():
+    if backup_ready and backup.exists():
         try:
-            _remove_tree(INSTALL_DIR)
+            _remove_tree(target)
         except CliError as exc:
             print(f"恢复前删除失败: {exc}", file=sys.stderr)
         try:
-            _copy_tree(BACKUP_DIR, INSTALL_DIR)
+            _copy_tree(backup, target)
             print("已还原升级前的文件")
         except CliError as exc:
             print(f"还原文件失败: {exc}", file=sys.stderr)
@@ -295,9 +375,12 @@ def uninstall(purge: bool = False) -> int:
     print("结束托盘与 OCR 进程")
     _close_running_clients()
 
+    target = installed_dir()
+    backup = backup_dir_for(target)
+
     # 先删文件、后删服务：文件删不掉时服务仍然存在（已停止），状态可恢复
     failures: list[str] = []
-    for path in (INSTALL_DIR, BACKUP_DIR):
+    for path in (target, backup):
         if not path.exists():
             continue
         try:
@@ -316,6 +399,7 @@ def uninstall(purge: bool = False) -> int:
 
     if state is not None:
         _delete_service()
+        _forget_install_dir()
         print("服务已删除")
 
     store = ConfigStore()
@@ -338,8 +422,9 @@ def uninstall(purge: bool = False) -> int:
 def status() -> int:
     state = query_state()
     store = ConfigStore()
+    target = installed_dir()
     print(f"服务: {state or '未安装'}")
-    print(f"安装目录: {INSTALL_DIR} ({'存在' if INSTALL_DIR.exists() else '不存在'})")
+    print(f"安装目录: {target} ({'存在' if target.exists() else '不存在'})")
     print(f"配置文件: {store.path} ({'存在' if store.path.exists() else '不存在'})")
     print(f"日志目录: {store.base_dir / 'logs'}")
     return 0 if state is not None else 1
@@ -353,6 +438,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_install = sub.add_parser("install", help="安装服务")
     p_install.add_argument("--source", type=Path, default=None, help="打包产物目录")
+    p_install.add_argument("--dir", type=Path, default=None, dest="target_dir",
+                           help=f"安装目录（默认 {DEFAULT_INSTALL_DIR}）")
     p_install.add_argument("--no-start", action="store_true", help="安装后不启动")
 
     p_upgrade = sub.add_parser("upgrade", help="升级并保留配置")
@@ -369,7 +456,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "install":
-            return install(args.source, start=not args.no_start)
+            return install(args.source, start=not args.no_start, target_dir=args.target_dir)
         if args.command == "upgrade":
             return upgrade(args.source)
         if args.command == "uninstall":
