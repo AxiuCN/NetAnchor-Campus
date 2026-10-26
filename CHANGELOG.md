@@ -1,3 +1,8 @@
+# 0.2.2
+
+- 升级改为"干净安装"：备份后删除旧目录再复制，避免旧版独有文件残留（如多余的 `pywintypes314.dll`）
+- 修复从安装目录内运行 `upgrade` 时覆盖自身失败的问题：自动改用发布包中的 CLI 继续
+
 # 0.2.1
 
 - 修复打包内 `pywintypes314.dll` 重复：两份 DLL 产生两个 `pywintypes.error` 类，导致 `except pywintypes.error` 失效

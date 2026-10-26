@@ -132,3 +132,29 @@ def test_upgrade_from_install_dir_without_package_cli_fails(tmp_path, monkeypatc
 
     with pytest.raises(CliError, match="不能从安装目录内运行"):
         cli.upgrade(src)
+
+
+def test_upgrade_removes_stale_files_from_old_version(tmp_path, monkeypatch):
+    """只覆盖不删除会留下旧版独有文件（例如多余的 pywintypes314.dll）。"""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / cli.SERVICE_EXE_NAME).write_text("new", encoding="utf-8")
+
+    install = tmp_path / "install"
+    install.mkdir()
+    (install / "stale.dll").write_text("old", encoding="utf-8")
+
+    backup = tmp_path / "install.bak"
+
+    monkeypatch.setattr(cli, "installed_dir", lambda: install)
+    monkeypatch.setattr(cli, "backup_dir_for", lambda _target: backup)
+    monkeypatch.setattr(cli, "query_state", lambda *_a, **_k: "running")
+    monkeypatch.setattr(cli, "_stop", lambda: None)
+    monkeypatch.setattr(cli, "_close_running_clients", lambda: None)
+    monkeypatch.setattr(cli, "_start", lambda silent=False: None)
+    monkeypatch.setattr(cli.sys, "frozen", False, raising=False)
+
+    assert cli.upgrade(src) == 0
+    assert not (install / "stale.dll").exists(), "旧版独有文件应被清理"
+    assert (install / cli.SERVICE_EXE_NAME).exists()
+    assert (backup / "stale.dll").exists(), "备份里应保留旧文件"

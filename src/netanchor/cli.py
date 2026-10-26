@@ -347,6 +347,9 @@ def upgrade(source: Path | None = None) -> int:
         backup_ready = True
         print(f"已备份到 {backup}")
 
+        # 干净安装：先删旧目录再复制。只覆盖不删除会把上一版独有的文件留下
+        # （例如根目录的 pywintypes314.dll，会让旧缺陷继续生效）。
+        _remove_tree(target)
         _copy_tree(src, target)
         _start()
     except Exception as exc:  # noqa: BLE001
