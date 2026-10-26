@@ -287,17 +287,36 @@ def _restore_previous_install(backup_ready: bool, was_running: bool) -> None:
 
 
 def uninstall(purge: bool = False) -> int:
-    if query_state() is not None:
+    state = query_state()
+    if state is not None:
         print("停止服务")
         _stop()
+
+    print("结束托盘与 OCR 进程")
+    _close_running_clients()
+
+    # 先删文件、后删服务：文件删不掉时服务仍然存在（已停止），状态可恢复
+    failures: list[str] = []
+    for path in (INSTALL_DIR, BACKUP_DIR):
+        if not path.exists():
+            continue
+        try:
+            _remove_tree(path)
+            print(f"已删除 {path}")
+        except CliError as exc:
+            failures.append(str(exc))
+            print(f"删除失败: {exc}", file=sys.stderr)
+
+    if failures:
+        print(
+            "安装目录未清理干净：服务保留（已停止）。关闭占用文件的程序后可重新执行 uninstall。",
+            file=sys.stderr,
+        )
+        return 1
+
+    if state is not None:
         _delete_service()
         print("服务已删除")
-    if INSTALL_DIR.exists():
-        _remove_tree(INSTALL_DIR)
-        print(f"已删除 {INSTALL_DIR}")
-    if BACKUP_DIR.exists():  # 升级留下的备份
-        _remove_tree(BACKUP_DIR)
-        print(f"已删除 {BACKUP_DIR}")
 
     store = ConfigStore()
     if purge:
