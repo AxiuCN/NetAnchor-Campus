@@ -319,6 +319,20 @@ def upgrade(source: Path | None = None) -> int:
     backup = backup_dir_for(target)
     print(f"安装目录: {target}")
 
+    # 从安装目录里运行 upgrade 时，CLI 自身会被锁住，无法覆盖自己。
+    # 改为用发布包里的 CLI 重新执行一次，避免"复制失败 + 回滚也失败"。
+    if getattr(sys, "frozen", False):
+        running_from = Path(sys.executable).resolve().parent
+        if running_from == target.resolve():
+            alt_cli = (src / "NetAnchor.Cli.exe").resolve()
+            if alt_cli.exists() and alt_cli != Path(sys.executable).resolve():
+                print(f"当前 CLI 运行在安装目录内，无法覆盖自身；改用发布包中的 CLI 继续")
+                return subprocess.run([str(alt_cli), "upgrade", "--source", str(src)]).returncode
+            raise CliError(
+                "不能从安装目录内运行 upgrade（会锁住自身）。请从发布包目录运行，"
+                "或用 --source 指向发布包后改用发布包中的 NetAnchor.Cli.exe"
+            )
+
     print("停止服务")
     _stop()
     print("结束托盘与 OCR 进程")

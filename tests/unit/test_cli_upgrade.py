@@ -83,3 +83,52 @@ def test_failure_keeps_stopped_state_when_service_was_stopped(tmp_path, monkeypa
 
     assert cli.upgrade(src) == 1
     assert calls["started"] == 0, "升级前服务是停止的，失败后不应擅自启动"
+
+
+def test_upgrade_from_install_dir_reexecs_package_cli(tmp_path, monkeypatch):
+    """从安装目录内运行 upgrade 会锁住自身，应改由发布包里的 CLI 继续。"""
+    src = tmp_path / "pkg"
+    src.mkdir()
+    (src / cli.SERVICE_EXE_NAME).write_text("new", encoding="utf-8")
+    (src / "NetAnchor.Cli.exe").write_text("cli", encoding="utf-8")
+
+    install = tmp_path / "install"
+    install.mkdir()
+
+    monkeypatch.setattr(cli, "installed_dir", lambda: install)
+    monkeypatch.setattr(cli, "query_state", lambda *_a, **_k: "running")
+    monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(cli.sys, "executable", str(install / "NetAnchor.Cli.exe"))
+
+    called = {}
+
+    class Result:
+        returncode = 0
+
+    def fake_run(argv, **_kwargs):
+        called["argv"] = argv
+        return Result()
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli.upgrade(src) == 0
+    assert called["argv"][0] == str((src / "NetAnchor.Cli.exe").resolve())
+    assert called["argv"][1] == "upgrade"
+    assert called["argv"][3] == str(src)
+
+
+def test_upgrade_from_install_dir_without_package_cli_fails(tmp_path, monkeypatch):
+    src = tmp_path / "pkg"
+    src.mkdir()
+    (src / cli.SERVICE_EXE_NAME).write_text("new", encoding="utf-8")
+
+    install = tmp_path / "install"
+    install.mkdir()
+
+    monkeypatch.setattr(cli, "installed_dir", lambda: install)
+    monkeypatch.setattr(cli, "query_state", lambda *_a, **_k: "running")
+    monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(cli.sys, "executable", str(install / "NetAnchor.Cli.exe"))
+
+    with pytest.raises(CliError, match="不能从安装目录内运行"):
+        cli.upgrade(src)
