@@ -263,12 +263,15 @@ class PipeServer(threading.Thread):
 
             try:
                 win32pipe.ConnectNamedPipe(handle, None)
-            except pywintypes.error as exc:
-                if exc.winerror != 535:  # ERROR_PIPE_CONNECTED
+            except Exception as exc:  # noqa: BLE001
+                if getattr(exc, "winerror", None) != 535:  # ERROR_PIPE_CONNECTED
                     handle.Close()
                     continue
             try:
                 self._serve_once(handle)
+            except Exception:  # noqa: BLE001
+                # 单个连接出问题（含 pywintypes.error 类身份不一致的情况）不能终止服务端
+                logger.warning("处理 IPC 连接时异常，继续提供服务", exc_info=True)
             finally:
                 try:
                     win32pipe.DisconnectNamedPipe(handle)
@@ -279,8 +282,10 @@ class PipeServer(threading.Thread):
     def _serve_once(self, handle) -> None:
         try:
             _err, data = win32file.ReadFile(handle, MAX_FRAME)
-        except pywintypes.error:
-            return
+        except Exception as exc:  # noqa: BLE001
+            if getattr(exc, "winerror", None) in (109, 233):  # BROKEN_PIPE / PIPE_NOT_CONNECTED
+                return
+            raise
         pid = _client_pid(handle)
         try:
             request = decode_frame(data)
@@ -293,8 +298,9 @@ class PipeServer(threading.Thread):
                 response = _error(str(request.get("id", "?")), "internal", f"{type(exc).__name__}: {exc}")
         try:
             win32file.WriteFile(handle, encode_frame(response))
-        except pywintypes.error:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            if getattr(exc, "winerror", None) not in (109, 233):
+                logger.debug("回写响应失败", exc_info=True)
 
 
 def _error(request_id: str, code: str, message: str) -> dict:

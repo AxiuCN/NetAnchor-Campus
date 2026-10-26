@@ -55,6 +55,20 @@ a_cli = make_analysis(os.path.join(ENTRY, "entry_cli.py"))
 a_ocr.binaries = [item for item in a_ocr.binaries if "opencv_videoio_ffmpeg" not in item[0].lower()]
 a_ocr.datas = [item for item in a_ocr.datas if "opencv_videoio_ffmpeg" not in item[0].lower()]
 
+# pywintypes 只保留 pywin32_system32 下的那一份。
+# 根目录同时存在一份（来自基础 Python 安装目录）时，win32file.pyd 会加载根副本，
+# 而 Python 侧的 pywintypes 模块用 pywin32_system32 副本，产生两个 pywintypes.error 类，
+# 导致 except pywintypes.error 抓不住。
+for _analysis in (a_service, a_tray, a_ocr, a_cli):
+    _analysis.binaries = [
+        item
+        for item in _analysis.binaries
+        if not (
+            item[0].lower().endswith("pywintypes314.dll")
+            and "pywin32_system32" not in item[1].lower()
+        )
+    ]
+
 pyz_service = PYZ(a_service.pure)
 pyz_tray = PYZ(a_tray.pure)
 pyz_ocr = PYZ(a_ocr.pure)

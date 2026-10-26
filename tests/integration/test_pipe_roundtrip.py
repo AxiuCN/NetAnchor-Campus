@@ -2,10 +2,11 @@ import time
 import uuid
 
 import pytest
+import win32file
 
 from netanchor.config import Config, PortalCandidate
 from netanchor.config_store import ConfigStore
-from netanchor.ipc import IpcError, PipeClient, PipeServer
+from netanchor.ipc import PIPE_ACCESS_CLIENT, IpcError, PipeClient, PipeServer
 from netanchor.service_api import RuntimeStatus, ServiceApi
 
 
@@ -103,3 +104,23 @@ def test_client_explains_missing_service(monkeypatch):
     client = PipeClient("\\\\.\\pipe\\NaMissing-" + uuid.uuid4().hex, timeout_ms=300)
     with pytest.raises(IpcError, match="服务未安装"):
         client.request("status")
+
+
+def test_server_survives_client_disconnect(tmp_path, pipe_name):
+    """客户端连上就断（ERROR_BROKEN_PIPE）不能把服务端线程带走。"""
+    store = make_store(tmp_path)
+    server = start_server(store, pipe_name)
+    try:
+        assert server.wait_ready(3.0) is True
+        handle = win32file.CreateFile(
+            pipe_name, PIPE_ACCESS_CLIENT, 0, None, win32file.OPEN_EXISTING, 0, None
+        )
+        handle.Close()
+        time.sleep(0.3)
+
+        assert server.is_alive(), "一次异常断开不应终止服务端"
+        client = PipeClient(pipe_name, timeout_ms=3000, allow_insecure=True)
+        assert call_with_retry(client, "status")["ok"] is True
+    finally:
+        server.stop()
+        server.join(timeout=3)

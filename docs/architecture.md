@@ -566,3 +566,31 @@ D8 定的是"托盘随用户登录启动，走 `HKCU\...\Run`"，但**代码里�
 - 只有两个真正验证 ACL 的用例保留默认值，并在非提权环境下 `skip`（而不是失败）。
 
 这样外部审计用普通账户跑测试时，结果是"通过 + 少量 skip"，而不是一片红色错误。
+
+## 23. 现场问题修复（2026-10-27）
+
+真机安装后出现两个现象：服务 `RUNNING` 但 `\\.\pipe\` 里没有 `NetAnchor.Campus.v1`；托盘设置报"连接服务失败：系统找不到指定的文件"；多次启动托盘出现重复图标。
+
+### 根因：打包内有两个 pywintypes DLL
+
+`_internal` 里同时存在：
+
+- `pywin32_system32\pywintypes314.dll`（PyInstaller 的 pywin32 hook 收集）
+- `pywintypes314.dll`（被二进制依赖分析从基础 Python 目录额外收集）
+
+Windows 加载 `win32\win32file.pyd` 时解析到根目录那份，而 Python 侧的 `pywintypes` 模块用的是 `pywin32_system32` 那份——**同一个 DLL 的两份加载，产生两个互不相等的 `pywintypes.error` 类**。
+
+后果：客户端连上就断时 `ReadFile` 抛 `ERROR_BROKEN_PIPE(109)`，`except pywintypes.error` 因为类身份不同而抓不住，异常穿出到线程顶层，IPC 服务端线程终止、管道消失，此后所有连接都报"找不到指定的文件"。
+
+### 修复
+
+1. 打包 spec 里去掉根目录那份 `pywintypes314.dll`，只保留 `pywin32_system32` 下的。
+2. IPC 服务端按错误码而不是异常类判断：`109`（管道已结束）/`233`（未连接）视为正常断开。
+3. 单个连接出异常不再终止服务端循环，记 warning 后继续服务。
+4. 托盘单实例（命名互斥体）；`--version` 便于确认包版本；客户端错误按服务状态分类。
+
+### 验证
+
+- 单元/集成测试：`129 passed, 2 skipped`（含"客户端连上就断，服务端仍可继续响应"用例）。
+- 打包产物：`_internal` 只剩一份 `pywin32_system32\pywintypes314.dll`。
+- 冻结服务实测：模拟客户端连上即断后，日志无异常、管道仍存在、后续 `version` 请求正常返回。
