@@ -1,6 +1,12 @@
+"""配置存储与凭据加密。
+
+设置 DACL 需要提权令牌：只有两个 ACL 用例需要管理员，其余用例在普通权限下也能跑
+（`apply_acl=False`），这样外部审计用普通账户执行 pytest 不会得到一堆 PermissionError。
+"""
 import json
 
 import pytest
+import win32api
 import win32security
 
 from netanchor.config import Config, PortalCandidate
@@ -15,9 +21,20 @@ ADMIN_SID = win32security.ConvertSidToStringSid(
 )
 
 
+def _is_elevated() -> bool:
+    try:
+        token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32security.TOKEN_QUERY)
+        return bool(win32security.GetTokenInformation(token, win32security.TokenElevation))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+requires_admin = pytest.mark.skipif(not _is_elevated(), reason="设置 ACL 需要提权令牌")
+
+
 def make_store(tmp_path) -> ConfigStore:
-    store = ConfigStore(tmp_path / "nac")
-    return store
+    # 非 ACL 用例不碰 DACL，普通权限可跑
+    return ConfigStore(tmp_path / "nac", apply_acl=False)
 
 
 def valid_config() -> Config:
@@ -26,18 +43,32 @@ def valid_config() -> Config:
     return config
 
 
+@requires_admin
 def test_directory_dacl_only_system_and_admins(tmp_path):
-    store = make_store(tmp_path)
+    store = ConfigStore(tmp_path / "nac")  # 默认 apply_acl=True
     store.ensure_dir()
     sids = {sid for sid, _ in describe_dacl(store.base_dir)}
     assert sids == {SYSTEM_SID, ADMIN_SID}
 
 
+@requires_admin
 def test_file_dacl_only_system_and_admins(tmp_path):
-    store = make_store(tmp_path)
+    store = ConfigStore(tmp_path / "nac")
     path = store.save(valid_config())
     sids = {sid for sid, _ in describe_dacl(path)}
     assert sids == {SYSTEM_SID, ADMIN_SID}
+
+
+def test_apply_acl_false_skips_dacl_calls(tmp_path, monkeypatch):
+    import netanchor.config_store as module
+
+    def boom(*_a, **_k):
+        raise AssertionError("apply_acl=False 时不应设置 DACL")
+
+    monkeypatch.setattr(module, "_apply_restricted_dacl", boom)
+    store = ConfigStore(tmp_path / "nac", apply_acl=False)
+    store.save(valid_config())
+    assert store.path.exists()
 
 
 def test_password_encrypted_on_disk_and_decrypts_on_load(tmp_path):

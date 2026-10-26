@@ -320,7 +320,15 @@ def uninstall(purge: bool = False) -> int:
 
     store = ConfigStore()
     if purge:
-        shutil.rmtree(store.base_dir, ignore_errors=True)
+        try:
+            _remove_tree(store.base_dir)
+        except CliError as exc:
+            print(f"配置目录清理失败: {exc}", file=sys.stderr)
+            print(f"仍存在: {store.base_dir}", file=sys.stderr)
+            return 1
+        if store.base_dir.exists():
+            print(f"配置目录仍存在，未完全删除: {store.base_dir}", file=sys.stderr)
+            return 1
         print(f"已删除配置与日志: {store.base_dir}")
     else:
         print(f"配置与日志保留在: {store.base_dir}（如需删除加 --purge）")

@@ -71,15 +71,18 @@ def describe_dacl(path: Path) -> list[tuple[str, int]]:
 
 
 class ConfigStore:
-    def __init__(self, base_dir: Path | str | None = None) -> None:
+    def __init__(self, base_dir: Path | str | None = None, apply_acl: bool = True) -> None:
         self.base_dir = Path(base_dir) if base_dir else default_base_dir()
         self.path = self.base_dir / CONFIG_FILE_NAME
         self.backup_path = self.base_dir / (CONFIG_FILE_NAME + BACKUP_SUFFIX)
+        # 测试里可关闭：设置 DACL 需要管理员权限，普通权限跑测试会 PermissionError
+        self.apply_acl = apply_acl
 
     # ---- 目录与权限 ----
     def ensure_dir(self) -> Path:
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        _apply_restricted_dacl(self.base_dir, is_dir=True)
+        if self.apply_acl:
+            _apply_restricted_dacl(self.base_dir, is_dir=True)
         return self.base_dir
 
     # ---- 读写 ----
@@ -129,14 +132,16 @@ class ConfigStore:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
-            _apply_restricted_dacl(temp_path, is_dir=False)
+            if self.apply_acl:
+                _apply_restricted_dacl(temp_path, is_dir=False)
             if self.path.exists():
                 os.replace(self.path, self.backup_path)
             os.replace(temp_path, self.path)
         finally:
             if temp_path.exists():
                 temp_path.unlink()
-        _apply_restricted_dacl(self.path, is_dir=False)
+        if self.apply_acl:
+            _apply_restricted_dacl(self.path, is_dir=False)
         return self.path
 
     # ---- 凭据 ----

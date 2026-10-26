@@ -15,7 +15,7 @@ def pipe_name():
 
 
 def make_store(tmp_path) -> ConfigStore:
-    store = ConfigStore(tmp_path / "nac")
+    store = ConfigStore(tmp_path / "nac", apply_acl=False)
     config = Config()
     config.portal.candidates = [PortalCandidate(name="t", host="10.0.0.1")]
     store.save(config)

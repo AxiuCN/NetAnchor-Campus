@@ -34,7 +34,7 @@ class FakePortal:
 
 @pytest.fixture()
 def store(tmp_path):
-    store = ConfigStore(tmp_path / "nac")
+    store = ConfigStore(tmp_path / "nac", apply_acl=False)
     config = Config()
     config.portal.candidates = [PortalCandidate(name="t", host="10.0.0.1")]
     config.account.username = "20240001"
