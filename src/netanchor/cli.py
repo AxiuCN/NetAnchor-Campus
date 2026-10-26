@@ -237,37 +237,53 @@ def upgrade(source: Path | None = None) -> int:
         print(f"未找到 {src / SERVICE_EXE_NAME}", file=sys.stderr)
         return 1
 
+    was_running = query_state() == "running"
+
     print("停止服务")
     _stop()
     print("结束托盘与 OCR 进程")
     _close_running_clients()
 
-    if BACKUP_DIR.exists():
-        _remove_tree(BACKUP_DIR)
-    shutil.copytree(INSTALL_DIR, BACKUP_DIR)
-    print(f"已备份到 {BACKUP_DIR}")
-
+    # 从停止服务开始的一切失败都必须能回到"升级前的运行状态"
+    backup_ready = False
     try:
+        if BACKUP_DIR.exists():
+            _remove_tree(BACKUP_DIR)
+        shutil.copytree(INSTALL_DIR, BACKUP_DIR)
+        backup_ready = True
+        print(f"已备份到 {BACKUP_DIR}")
+
         _copy_tree(src, INSTALL_DIR)
         _start()
     except Exception as exc:  # noqa: BLE001
-        print(f"升级失败，回滚: {exc}", file=sys.stderr)
-        try:
-            _remove_tree(INSTALL_DIR)
-        except CliError:
-            pass
-        try:
-            _copy_tree(BACKUP_DIR, INSTALL_DIR)
-        except CliError as copy_exc:
-            print(f"回滚复制失败: {copy_exc}", file=sys.stderr)
-        try:
-            _start(silent=True)
-            print("已回滚并重新启动")
-        except Exception as rollback_exc:  # noqa: BLE001
-            print(f"回滚后仍无法启动: {rollback_exc}", file=sys.stderr)
+        print(f"升级失败，正在恢复: {exc}", file=sys.stderr)
+        _restore_previous_install(backup_ready, was_running)
         return 1
     print("升级完成")
     return 0
+
+
+def _restore_previous_install(backup_ready: bool, was_running: bool) -> None:
+    """升级失败后的恢复：有备份就还原文件，再把服务起回升级前的状态。"""
+    if backup_ready and BACKUP_DIR.exists():
+        try:
+            _remove_tree(INSTALL_DIR)
+        except CliError as exc:
+            print(f"恢复前删除失败: {exc}", file=sys.stderr)
+        try:
+            _copy_tree(BACKUP_DIR, INSTALL_DIR)
+            print("已还原升级前的文件")
+        except CliError as exc:
+            print(f"还原文件失败: {exc}", file=sys.stderr)
+
+    if not was_running:
+        print("服务升级前已停止，保持停止状态")
+        return
+    try:
+        _start(silent=True)
+        print("已恢复升级前的服务")
+    except Exception as exc:  # noqa: BLE001
+        print(f"恢复服务失败: {exc}", file=sys.stderr)
 
 
 def uninstall(purge: bool = False) -> int:
