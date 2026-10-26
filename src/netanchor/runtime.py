@@ -92,6 +92,13 @@ class ServiceRuntime:
         )
         self._server = PipeServer(self._api.handle, pipe_name=self._pipe_name)
         self._server.start()
+        if not self._server.wait_ready(2.0):
+            self._logger.error(
+                "IPC 管道未就绪：%s",
+                self._server.last_error or "服务端线程未在 2 秒内创建管道",
+            )
+        else:
+            self._logger.info("IPC 管道已就绪: %s", self._pipe_name)
 
         self._build_monitor()
         self._start_monitor()

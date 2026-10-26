@@ -1,4 +1,11 @@
-from netanchor.ui.tray import color_for_state, status_text
+import uuid
+
+from netanchor.ui.tray import (
+    acquire_single_instance,
+    color_for_state,
+    release_single_instance,
+    status_text,
+)
 
 
 def test_color_for_known_states():
@@ -27,3 +34,12 @@ def test_status_text_without_error():
 
 def test_status_text_unknown_state_uses_raw_value():
     assert "weird" in status_text({"state": "weird"})
+
+
+def test_single_instance_mutex():
+    name = "Local\\NaTrayTest-" + uuid.uuid4().hex
+    try:
+        assert acquire_single_instance(name) is True
+        assert acquire_single_instance(name) is False
+    finally:
+        release_single_instance()

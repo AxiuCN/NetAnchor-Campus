@@ -114,6 +114,8 @@ C:\Program Files\NetAnchor-Campus\
 ## 6. IPC 协议
 
 - 管道名：`\\.\pipe\NetAnchor.Campus.v1`
+- 管道就绪会写日志 `IPC 管道已就绪`；服务启动后 2 秒内没就绪会记 `IPC 管道未就绪`（含原因）——避免"服务 RUNNING 但 IPC 不可用"这种沉默失败
+- 客户端连接失败会区分原因：服务未安装 / 服务未运行 / 服务在跑但管道未创建
 - DACL：`SYSTEM` / `Administrators` 完全控制；`INTERACTIVE`（S-1-5-4）只有 `0x100083`（读数据、写数据、读属性、同步），**不含 `FILE_CREATE_PIPE_INSTANCE`**——普通用户无法再造同名实例冒充服务端
 - 服务端首实例带 `FILE_FLAG_FIRST_PIPE_INSTANCE`：名字已被占用时启动即失败并记日志，不与冒充实例共存
 - **客户端校验服务端**：发请求前取 `GetNamedPipeServerProcessId`，要求对端令牌为 `S-1-5-18`（LocalSystem）且镜像为 `NetAnchor.Service.exe`；任何一步失败就拒绝发送（开发态可用 `NA_IPC_INSECURE=1` 放行）

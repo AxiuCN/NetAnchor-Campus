@@ -24,10 +24,11 @@ import win32api
 import win32file
 import win32pipe
 import win32security
+import win32service
+
+from .constants import PIPE_NAME, SERVICE_NAME
 
 logger = logging.getLogger(__name__)
-
-PIPE_NAME = r"\\.\pipe\NetAnchor.Campus.v1"
 
 # GENERIC_READ|GENERIC_WRITE 去掉 FILE_CREATE_PIPE_INSTANCE(0x4)
 # 0x100083 = FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE
@@ -188,7 +189,15 @@ class PipeServer(threading.Thread):
         self._sddl = sddl
         self._is_admin = is_admin
         self._stop = threading.Event()
+        self._ready = threading.Event()
         self.last_error = ""
+
+    @property
+    def ready(self) -> bool:
+        return self._ready.is_set()
+
+    def wait_ready(self, timeout: float) -> bool:
+        return self._ready.wait(timeout)
 
     def stop(self) -> None:
         self._stop.set()
@@ -223,20 +232,34 @@ class PipeServer(threading.Thread):
                 )
             except pywintypes.error as exc:
                 if exc.winerror in (5, 231):  # ACCESS_DENIED / PIPE_BUSY
-                    logger.error("管道名可能已被冒充实例占用: winerror=%s", exc.winerror)
+                    logger.warning("创建管道实例失败，可能被其它实例占用: winerror=%s，重试", exc.winerror)
                     time.sleep(0.2)
                     continue
                 self.last_error = f"创建管道失败: {exc}"
                 logger.error(self.last_error)
                 return None
         self.last_error = "管道名持续被占用，服务端放弃创建实例"
+        logger.error(self.last_error)
         return None
 
     def run(self) -> None:
+        # 线程里未捕获的异常会静默终止，必须自己记下来
+        try:
+            self._run()
+        except BaseException:  # noqa: BLE001
+            self.last_error = self.last_error or "IPC 服务端线程异常退出"
+            logger.exception("IPC 服务端线程异常退出")
+
+    def _run(self) -> None:
+        announced = False
         while not self._stop.is_set():
             handle = self._create_pipe()
             if handle is None:
                 return
+            if not announced:
+                announced = True
+                self._ready.set()
+                logger.info("IPC 管道已就绪: %s", self._pipe_name)
 
             try:
                 win32pipe.ConnectNamedPipe(handle, None)
@@ -281,6 +304,42 @@ def _error(request_id: str, code: str, message: str) -> dict:
 
 # ---------------- 客户端 ----------------
 
+def service_state() -> str | None:
+    """只读查询服务状态，用于把"管道不存在"翻译成人话。"""
+    try:
+        scm = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_CONNECT)
+    except win32service.error:
+        return None
+    try:
+        try:
+            service = win32service.OpenService(scm, SERVICE_NAME, win32service.SERVICE_QUERY_STATUS)
+        except win32service.error:
+            return None
+        try:
+            status = win32service.QueryServiceStatus(service)[1]
+        finally:
+            win32service.CloseServiceHandle(service)
+        return {
+            win32service.SERVICE_STOPPED: "stopped",
+            win32service.SERVICE_RUNNING: "running",
+            win32service.SERVICE_START_PENDING: "start_pending",
+            win32service.SERVICE_STOP_PENDING: "stop_pending",
+        }.get(status, str(status))
+    finally:
+        win32service.CloseServiceHandle(scm)
+
+
+def _connect_hint(winerror: int) -> str:
+    if winerror != 2:  # ERROR_FILE_NOT_FOUND：管道不存在
+        return ""
+    state = service_state()
+    if state is None:
+        return "服务未安装"
+    if state != "running":
+        return f"服务状态为 {state}，未在运行"
+    return "服务在运行但未创建 IPC 管道，请查看服务日志（服务可能是启动失败或被占用）"
+
+
 class PipeClient:
     def __init__(
         self,
@@ -307,7 +366,9 @@ class PipeClient:
                 if exc.winerror == 231 and time.monotonic() < deadline:  # PIPE_BUSY
                     time.sleep(0.05)
                     continue
-                raise IpcError(f"连接服务失败: {exc.strerror or exc}") from exc
+                hint = _connect_hint(exc.winerror)
+                detail = f"（{hint}）" if hint else ""
+                raise IpcError(f"连接服务失败{detail}: {exc.strerror or exc}") from exc
 
     def request(self, cmd: str, data: dict | None = None, request_id: str = "cli") -> dict:
         payload = encode_frame({"v": PROTOCOL_VERSION, "id": request_id, "cmd": cmd, "data": data or {}})

@@ -14,11 +14,8 @@ import win32event
 import win32service
 import win32serviceutil
 
+from .constants import SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME, SERVICE_NAME
 from .runtime import ServiceRuntime
-
-SERVICE_NAME = "NetAnchorCampus"
-SERVICE_DISPLAY_NAME = "NetAnchor-Campus 校园网自动重连"
-SERVICE_DESCRIPTION = "检测断网并通过 Dr.COM 门户自动重连；配置与凭据由服务统一管理。"
 
 
 class NetAnchorService(win32serviceutil.ServiceFramework):

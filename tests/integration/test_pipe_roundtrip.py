@@ -5,7 +5,7 @@ import pytest
 
 from netanchor.config import Config, PortalCandidate
 from netanchor.config_store import ConfigStore
-from netanchor.ipc import PipeClient, PipeServer
+from netanchor.ipc import IpcError, PipeClient, PipeServer
 from netanchor.service_api import RuntimeStatus, ServiceApi
 
 
@@ -84,3 +84,22 @@ def test_write_allowed_for_admin(tmp_path, pipe_name):
     finally:
         server.stop()
         server.join(timeout=3)
+
+
+def test_server_reports_pipe_ready(tmp_path, pipe_name):
+    store = make_store(tmp_path)
+    server = start_server(store, pipe_name)
+    try:
+        assert server.wait_ready(3.0) is True
+        assert server.ready is True
+        assert server.last_error == ""
+    finally:
+        server.stop()
+        server.join(timeout=3)
+
+
+def test_client_explains_missing_service(monkeypatch):
+    monkeypatch.setattr("netanchor.ipc.service_state", lambda: None)
+    client = PipeClient("\\\\.\\pipe\\NaMissing-" + uuid.uuid4().hex, timeout_ms=300)
+    with pytest.raises(IpcError, match="服务未安装"):
+        client.request("status")

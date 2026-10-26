@@ -8,12 +8,36 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 import pystray
+import win32api
+import win32event
 from PIL import Image, ImageDraw
 
 from ..config import CARRIER_SUFFIX
 from ..ipc import IpcError, PipeClient
 
 POLL_SECONDS = 5
+SINGLE_INSTANCE_NAME = "Local\\NetAnchorCampus.Tray"
+ERROR_ALREADY_EXISTS = 183
+
+_instance_mutex = None
+
+
+def acquire_single_instance(name: str = SINGLE_INSTANCE_NAME) -> bool:
+    """拿命名互斥体；已有实例时返回 False。"""
+    global _instance_mutex
+    handle = win32event.CreateMutex(None, False, name)
+    if win32api.GetLastError() == ERROR_ALREADY_EXISTS:
+        win32api.CloseHandle(handle)
+        return False
+    _instance_mutex = handle
+    return True
+
+
+def release_single_instance() -> None:
+    global _instance_mutex
+    if _instance_mutex is not None:
+        win32api.CloseHandle(_instance_mutex)
+        _instance_mutex = None
 
 COLORS = {
     "online": "#2ecc71",
@@ -246,7 +270,20 @@ class TrayApp:
 
 
 def main() -> int:
-    TrayApp().run()
+    if not acquire_single_instance():
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(
+                None, "NetAnchor-Campus 托盘已经在运行。", "NetAnchor-Campus", 0x40
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return 0
+    try:
+        TrayApp().run()
+    finally:
+        release_single_instance()
     return 0
 
 
