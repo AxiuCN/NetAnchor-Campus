@@ -433,7 +433,10 @@ def status() -> int:
 # ---------------- 入口 ----------------
 
 def build_parser() -> argparse.ArgumentParser:
+    from . import __version__
+
     parser = argparse.ArgumentParser(prog="NetAnchor.Cli", description="NetAnchor-Campus 安装与维护")
+    parser.add_argument("--version", action="version", version=f"NetAnchor.Cli {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_install = sub.add_parser("install", help="安装服务")
@@ -442,7 +445,9 @@ def build_parser() -> argparse.ArgumentParser:
                            help=f"安装目录（默认 {DEFAULT_INSTALL_DIR}）")
     p_install.add_argument("--no-start", action="store_true", help="安装后不启动")
 
-    p_upgrade = sub.add_parser("upgrade", help="升级并保留配置")
+    p_upgrade = sub.add_parser(
+        "upgrade", help="升级并保留配置（安装目录跟随服务注册路径，不接受 --dir）"
+    )
     p_upgrade.add_argument("--source", type=Path, default=None, help="打包产物目录")
 
     p_uninstall = sub.add_parser("uninstall", help="卸载服务")

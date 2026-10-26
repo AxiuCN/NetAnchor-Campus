@@ -132,6 +132,13 @@ def test_parser_status():
     assert build_parser().parse_args(["status"]).command == "status"
 
 
+def test_cli_version_flag(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        build_parser().parse_args(["--version"])
+    assert excinfo.value.code == 0
+    assert "NetAnchor.Cli" in capsys.readouterr().out
+
+
 def test_query_state_for_absent_service():
     assert query_state("NetAnchorDefinitelyNotInstalled") is None
 
