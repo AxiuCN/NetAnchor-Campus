@@ -1,6 +1,6 @@
 [project]
 name = "netanchor-campus"
-version = "0.1.0"
+version = "0.1.1"
 description = "校园网 Dr.COM 断网自动重连（Windows 服务 + 托盘）"
 requires-python = ">=3.10"
 dependencies = [

@@ -1,3 +1,10 @@
+# 0.1.1
+
+- 修复 IPC 客户端不校验服务端身份：冒充的同名管道实例可能收走新密码
+- 管道 DACL 收回 `INTERACTIVE` 的创建实例权限，服务端首实例独占
+- 客户端发送前校验对端为 `LocalSystem` 且镜像为 `NetAnchor.Service.exe`
+- 开发态可用 `NA_IPC_INSECURE=1` 放行（仅用于 `--console` 调试）
+
 # 0.1.0
 
 - 全新实现：Windows 服务常驻，注销、切换用户不中断

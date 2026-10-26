@@ -1,34 +1,65 @@
-"""Named Pipe IPC：长度前缀 JSON，DACL 受限，写操作校验调用者权限。
+"""Named Pipe IPC：长度前缀 JSON，DACL 受限，客户端校验服务端身份。
 
 安全模型：
-- 管道 DACL：SYSTEM / Administrators 完全控制，INTERACTIVE 仅连接与读写
-- 每个请求都解析客户端 PID 并检查其令牌是否属于 Administrators；
-  是否放行由上层 `handler` 依据命令类型决定
+- 管道 DACL：SYSTEM / Administrators 完全控制；INTERACTIVE 只有读写数据与同步，
+  **不含 FILE_CREATE_PIPE_INSTANCE**（否则普通用户可再造一个同名实例冒充服务端）
+- 服务端首实例带 FILE_FLAG_FIRST_PIPE_INSTANCE：名字被抢占时启动即失败，而不是静默共存
+- 客户端在发送任何数据前校验对端：进程令牌为 LocalSystem 且镜像为 NetAnchor.Service.exe
 """
 from __future__ import annotations
 
 import ctypes
 import json
+import logging
+import os
 import struct
 import threading
+import time
 from ctypes import wintypes
+from pathlib import Path
 from typing import Callable
 
 import pywintypes
+import win32api
 import win32file
 import win32pipe
 import win32security
 
+logger = logging.getLogger(__name__)
+
 PIPE_NAME = r"\\.\pipe\NetAnchor.Campus.v1"
-PIPE_SDDL = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)"
+
+# GENERIC_READ|GENERIC_WRITE 去掉 FILE_CREATE_PIPE_INSTANCE(0x4)
+# 0x100083 = FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+PIPE_SDDL = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x100083;;;IU)"
+FILE_READ_DATA = 0x0001
+FILE_WRITE_DATA = 0x0002
+FILE_READ_ATTRIBUTES = 0x0080
+SYNCHRONIZE = 0x00100000
+PIPE_ACCESS_CLIENT = FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000
+# 注：PIPE_REJECT_REMOTE_CLIENTS(0x8) 在本机 Windows 10 21H2 上被 CreateNamedPipe
+# 以 ERROR_INVALID_PARAMETER 拒绝，故未使用；远程访问由 DACL 排除 NETWORK/ANONYMOUS 主体。
+
 MAX_FRAME = 64 * 1024
 PROTOCOL_VERSION = 1
 
+SYSTEM_SID = "S-1-5-18"
+DEFAULT_SERVER_IMAGE = "NetAnchor.Service.exe"
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+kernel32.GetNamedPipeServerProcessId.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.ULONG)]
+kernel32.GetNamedPipeServerProcessId.restype = wintypes.BOOL
+kernel32.QueryFullProcessImageNameW.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+]
+kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
 
 
 class IpcError(Exception):
-    """IPC 层错误：连接失败、帧非法、超时。"""
+    """IPC 层错误：连接失败、帧非法、超时、对端身份不可信。"""
 
 
 # ---------------- 帧编解码 ----------------
@@ -58,14 +89,14 @@ def decode_frame(data: bytes) -> dict:
     return payload
 
 
-# ---------------- 客户端权限 ----------------
+# ---------------- 身份检查 ----------------
 
 def is_admin_token(pid: int) -> bool:
     """检查进程令牌是否为提权的 Administrators。被 UAC 过滤的令牌不算。"""
     if not pid:
         return False
     try:
-        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
             return False
         try:
@@ -93,6 +124,54 @@ def _client_pid(handle) -> int:
     return 0
 
 
+def server_pid(handle) -> int:
+    pid = wintypes.ULONG()
+    if kernel32.GetNamedPipeServerProcessId(int(handle), ctypes.byref(pid)):
+        return int(pid.value)
+    return 0
+
+
+def _process_image(proc_handle) -> str:
+    size = wintypes.DWORD(32768)
+    buffer = ctypes.create_unicode_buffer(size.value)
+    if not kernel32.QueryFullProcessImageNameW(int(proc_handle), 0, buffer, ctypes.byref(size)):
+        return ""
+    return buffer.value
+
+
+def _token_user_sid(token) -> str:
+    info = win32security.GetTokenInformation(token, win32security.TokenUser)
+    sid = info[0] if isinstance(info, tuple) else info
+    return win32security.ConvertSidToStringSid(sid)
+
+
+def verify_server_identity(handle, expected_image: str = DEFAULT_SERVER_IMAGE) -> bool:
+    """校验管道对端：SYSTEM 令牌 + 指定镜像名。
+
+    在发送任何请求之前调用；任何一步失败都返回 False。
+    """
+    pid = server_pid(handle)
+    if not pid:
+        return False
+    try:
+        process = win32api.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    except Exception:  # 打不开就当作不可信
+        return False
+    try:
+        try:
+            token = win32security.OpenProcessToken(process, win32security.TOKEN_QUERY)
+            if _token_user_sid(token) != SYSTEM_SID:
+                return False
+        except Exception:
+            return False
+        image = _process_image(process)
+        if not image:
+            return False
+        return Path(image).name.lower() == expected_image.lower()
+    finally:
+        win32api.CloseHandle(process)
+
+
 # ---------------- 服务端 ----------------
 
 class PipeServer(threading.Thread):
@@ -109,6 +188,7 @@ class PipeServer(threading.Thread):
         self._sddl = sddl
         self._is_admin = is_admin
         self._stop = threading.Event()
+        self.last_error = ""
 
     def stop(self) -> None:
         self._stop.set()
@@ -129,17 +209,34 @@ class PipeServer(threading.Thread):
         attributes.SECURITY_DESCRIPTOR = descriptor
         return attributes
 
-    def run(self) -> None:
-        while not self._stop.is_set():
+    def _create_pipe(self):
+        """创建实例；首实例语义，被冒充实例占用时重试后放弃并记录错误。"""
+        for _ in range(10):
+            if self._stop.is_set():
+                return None
             try:
-                handle = win32pipe.CreateNamedPipe(
+                return win32pipe.CreateNamedPipe(
                     self._pipe_name,
-                    win32pipe.PIPE_ACCESS_DUPLEX,
+                    win32pipe.PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
                     win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
                     8, MAX_FRAME, MAX_FRAME, 0, self._security(),
                 )
-            except pywintypes.error:
-                break
+            except pywintypes.error as exc:
+                if exc.winerror in (5, 231):  # ACCESS_DENIED / PIPE_BUSY
+                    logger.error("管道名可能已被冒充实例占用: winerror=%s", exc.winerror)
+                    time.sleep(0.2)
+                    continue
+                self.last_error = f"创建管道失败: {exc}"
+                logger.error(self.last_error)
+                return None
+        self.last_error = "管道名持续被占用，服务端放弃创建实例"
+        return None
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            handle = self._create_pipe()
+            if handle is None:
+                return
 
             try:
                 win32pipe.ConnectNamedPipe(handle, None)
@@ -185,14 +282,46 @@ def _error(request_id: str, code: str, message: str) -> dict:
 # ---------------- 客户端 ----------------
 
 class PipeClient:
-    def __init__(self, pipe_name: str = PIPE_NAME, timeout_ms: int = 5000) -> None:
+    def __init__(
+        self,
+        pipe_name: str = PIPE_NAME,
+        timeout_ms: int = 5000,
+        allow_insecure: bool = False,
+        expected_image: str = DEFAULT_SERVER_IMAGE,
+    ) -> None:
         self._pipe_name = pipe_name
         self._timeout_ms = timeout_ms
+        # 开发态（--console 下服务是 python.exe、非 SYSTEM）可用 NA_IPC_INSECURE=1 放行
+        self._allow_insecure = allow_insecure or os.environ.get("NA_IPC_INSECURE") == "1"
+        self._expected_image = expected_image
+
+    def _connect(self):
+        deadline = time.monotonic() + self._timeout_ms / 1000
+        while True:
+            try:
+                return win32file.CreateFile(
+                    self._pipe_name, PIPE_ACCESS_CLIENT, 0, None,
+                    win32file.OPEN_EXISTING, 0, None,
+                )
+            except pywintypes.error as exc:
+                if exc.winerror == 231 and time.monotonic() < deadline:  # PIPE_BUSY
+                    time.sleep(0.05)
+                    continue
+                raise IpcError(f"连接服务失败: {exc.strerror or exc}") from exc
 
     def request(self, cmd: str, data: dict | None = None, request_id: str = "cli") -> dict:
         payload = encode_frame({"v": PROTOCOL_VERSION, "id": request_id, "cmd": cmd, "data": data or {}})
+        handle = self._connect()
         try:
-            raw = win32pipe.CallNamedPipe(self._pipe_name, payload, MAX_FRAME, self._timeout_ms)
+            if not self._allow_insecure and not verify_server_identity(handle, self._expected_image):
+                raise IpcError(
+                    "无法确认服务端身份（需要 LocalSystem 且镜像为 "
+                    f"{self._expected_image}），已拒绝发送请求"
+                )
+            win32file.WriteFile(handle, payload)
+            _err, raw = win32file.ReadFile(handle, MAX_FRAME)
         except pywintypes.error as exc:
-            raise IpcError(f"连接服务失败: {exc.strerror or exc}") from exc
+            raise IpcError(f"与服务通信失败: {exc.strerror or exc}") from exc
+        finally:
+            handle.Close()
         return decode_frame(raw)

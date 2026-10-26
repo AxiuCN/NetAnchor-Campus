@@ -44,7 +44,7 @@ def test_status_roundtrip(tmp_path, pipe_name):
     store = make_store(tmp_path)
     server = start_server(store, pipe_name, admin=False)
     try:
-        client = PipeClient(pipe_name, timeout_ms=3000)
+        client = PipeClient(pipe_name, timeout_ms=3000, allow_insecure=True)
         response = call_with_retry(client, "status")
         assert response["ok"] is True
         assert response["data"]["state"] == "online"
@@ -58,7 +58,7 @@ def test_write_allowed_for_interactive_user(tmp_path, pipe_name):
     store = make_store(tmp_path)
     server = start_server(store, pipe_name, admin=False)
     try:
-        client = PipeClient(pipe_name, timeout_ms=3000)
+        client = PipeClient(pipe_name, timeout_ms=3000, allow_insecure=True)
         response = call_with_retry(
             client, "creds.set",
             {"username": "20240001", "password": "p", "carrier": "校园其他"},
@@ -74,7 +74,7 @@ def test_write_allowed_for_admin(tmp_path, pipe_name):
     store = make_store(tmp_path)
     server = start_server(store, pipe_name, admin=True)
     try:
-        client = PipeClient(pipe_name, timeout_ms=3000)
+        client = PipeClient(pipe_name, timeout_ms=3000, allow_insecure=True)
         response = call_with_retry(
             client, "creds.set",
             {"username": "20240001", "password": "p", "carrier": "校园其他"},

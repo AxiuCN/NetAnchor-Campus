@@ -79,7 +79,7 @@ def test_start_reaches_online_and_serves_ipc(store):
     runtime = make_runtime(store)
     runtime.start()
     try:
-        client = PipeClient(runtime._pipe_name, timeout_ms=3000)
+        client = PipeClient(runtime._pipe_name, timeout_ms=3000, allow_insecure=True)
         assert wait_until(lambda: runtime.status.state == "online")
         status = call(client, "status")["data"]
         assert status["state"] == "online"
@@ -94,7 +94,7 @@ def test_monitor_stop_and_start_via_ipc(store):
     runtime = make_runtime(store)
     runtime.start()
     try:
-        client = PipeClient(runtime._pipe_name, timeout_ms=3000)
+        client = PipeClient(runtime._pipe_name, timeout_ms=3000, allow_insecure=True)
         assert wait_until(lambda: runtime.status.state == "online")
         assert call(client, "monitor.stop")["ok"] is True
         assert runtime.status.state == "stopped"
@@ -107,7 +107,7 @@ def test_monitor_stop_and_start_via_ipc(store):
 def test_stop_releases_pipe(store):
     runtime = make_runtime(store)
     runtime.start()
-    client = PipeClient(runtime._pipe_name, timeout_ms=2000)
+    client = PipeClient(runtime._pipe_name, timeout_ms=2000, allow_insecure=True)
     assert wait_until(lambda: runtime.status.state == "online")
     runtime.stop()
     with pytest.raises(IpcError):

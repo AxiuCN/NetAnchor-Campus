@@ -114,7 +114,9 @@ C:\Program Files\NetAnchor-Campus\
 ## 6. IPC 协议
 
 - 管道名：`\\.\pipe\NetAnchor.Campus.v1`
-- DACL：`SYSTEM` 完全控制、`Administrators` 完全控制、`INTERACTIVE`（S-1-5-4）连接与读写
+- DACL：`SYSTEM` / `Administrators` 完全控制；`INTERACTIVE`（S-1-5-4）只有 `0x100083`（读数据、写数据、读属性、同步），**不含 `FILE_CREATE_PIPE_INSTANCE`**——普通用户无法再造同名实例冒充服务端
+- 服务端首实例带 `FILE_FLAG_FIRST_PIPE_INSTANCE`：名字已被占用时启动即失败并记日志，不与冒充实例共存
+- **客户端校验服务端**：发请求前取 `GetNamedPipeServerProcessId`，要求对端令牌为 `S-1-5-18`（LocalSystem）且镜像为 `NetAnchor.Service.exe`；任何一步失败就拒绝发送（开发态可用 `NA_IPC_INSECURE=1` 放行）
 - 服务端逐请求校验客户端：`GetNamedPipeClientProcessId` + `OpenProcessToken`，记录调用者 SID / 会话 ID / PID；提权状态只写审计日志，不再作为放行条件
 - 授权：读写命令都对 `INTERACTIVE` 开放。敏感组合（凭据 ↔ 门户地址）由密文绑定保护，而不是由提权门槛保护
 - 帧：4 字节小端长度 + UTF-8 JSON；上限 64 KB；超时 5 s
@@ -442,3 +444,41 @@ D8 定的是"托盘随用户登录启动，走 `HKCU\...\Run`"，但**代码里�
 - 长时间运行观察（数天）与日志轮转验证
 - 杀软对服务形态二进制的误报观察
 - 门户接口变化后的适配策略（当前以参数外置为主）
+
+## 22. 外部复审整改（2026-10-22，2026-10-26 更新）
+
+外部复审在固定提交 `447c2f7` 上确认了 1 项 P1 与 6 项 P2。**本轮只处理 P1（#1）**，其余保持待修，避免一次改动面过大。
+
+### #1 客户端不验证服务端身份（P1）— 已修复
+
+**原问题**：`INTERACTIVE` 的 DACL 用的是 `GRGW`，而 `GENERIC_WRITE` 在管道上包含 `FILE_CREATE_PIPE_INSTANCE`，普通用户可再造一个同名实例；客户端按名字直连、不校验对端，保存密码时可能把新密码交给冒充实例。
+
+**修复**：
+
+1. DACL 改为 `0x100083`（读数据 / 写数据 / 读属性 / 同步），去掉创建实例权限。
+2. 服务端实例带 `FILE_FLAG_FIRST_PIPE_INSTANCE`，名字被抢占时启动失败并记日志。
+3. 客户端改为 `CreateFile` + `GetNamedPipeServerProcessId`，发送前校验对端令牌为 `S-1-5-18` 且镜像是 `NetAnchor.Service.exe`；不通过就不发任何字节。
+4. 开发态用 `NA_IPC_INSECURE=1` 显式放行（`--console` 下服务是 `python.exe`、非 SYSTEM）。
+
+**验证**：
+
+- 冒充实例（当前用户身份）→ 客户端拒绝、冒充端收不到任何请求（`tests/integration/test_pipe_identity.py`）
+- 预期镜像不匹配 → 拒绝
+- 放行模式 → 正常往返（证明拒绝原因是身份而非链路）
+- 真实服务（SYSTEM + `NetAnchor.Service.exe`）→ 默认安全客户端连接成功、`status=online`
+
+**未采用的选项**：`PIPE_REJECT_REMOTE_CLIENTS` 在本机 Windows 10 21H2 上被 `CreateNamedPipe` 以 `ERROR_INVALID_PARAMETER` 拒绝（实测），因此未使用；远程访问由 DACL 排除 NETWORK/ANONYMOUS 主体来限制。
+
+**残余**：拿到 SYSTEM 令牌的攻击者不受这层保护——但那已经超出本工具的安全边界。
+
+### #2–#6（P2）— 待修
+
+| 编号 | 问题 | 状态 |
+|---|---|---|
+| #2 | 停止超时后线程引用被清空，重启会并行认证 | 待修 |
+| #3 | 凭据绑定失效后仍提交空密码 | 待修 |
+| #4 | 升级备份失败后不恢复原服务 | 待修 |
+| #5 | 卸载不先关闭客户端，删除中断 | 待修 |
+| #6 | `--purge` 清理失败仍返回 0 | 待修 |
+
+另外，复审在非管理员令牌下跑测试得到 25 项 PermissionError：这是测试基建问题（ACL 用例需要管理员），不是产品缺陷，计划在修 #2–#6 时一并处理（非 ACL 用例可无管理员运行，ACL 用例显式跳过）。
