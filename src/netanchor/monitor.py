@@ -19,6 +19,10 @@ class _Cancelled(Exception):
     """内部信号：停止事件已置位，放弃本轮认证。"""
 
 
+class _CredentialsUnavailable(Exception):
+    """内部信号：账号在，但没有可用的密码（例如门户地址变更后密文失效）。"""
+
+
 class State(str, Enum):
     ONLINE = "online"
     RECONNECTING = "reconnecting"
@@ -92,8 +96,11 @@ class Monitor:
             return CycleResult(State.ONLINE, "", 0)
 
         account = self._config.account
-        if not account.username or not (account.password or account.password_protected):
-            return self._fail(State.CONFIG_MISSING, "缺少账号或密码")
+        # 必须用 credentials_ready()：它同时校验密码密文与当前门户地址的绑定关系。
+        # 只看 password_protected 是否非空会在地址变更后放行，进而提交空密码。
+        if not self._config.credentials_ready():
+            detail = "缺少账号" if not account.username else "缺少可用密码（门户地址变更后需要重新输入密码）"
+            return self._fail(State.CONFIG_MISSING, detail)
 
         candidate = self._portal.pick_candidate(
             self._config.portal.candidates,
@@ -106,6 +113,8 @@ class Monitor:
             failure = self._authenticate(candidate)
         except _Cancelled:
             return CycleResult(State.STOPPED, "已取消", self._consecutive)
+        except _CredentialsUnavailable:
+            return self._fail(State.CONFIG_MISSING, "缺少可用密码（门户地址变更后需要重新输入密码）")
 
         if failure is None:
             self._sleep(2)
@@ -119,6 +128,8 @@ class Monitor:
 
     def _authenticate(self, candidate) -> str | None:
         """返回 None 表示登录成功；否则返回失败原因。被取消时抛 _Cancelled。"""
+        if not self._config.account.password:
+            raise _CredentialsUnavailable
         last_failure = "未进入登录流程"
         for attempt in range(1, self._config.monitor.max_captcha_attempts + 1):
             if self._cancelled():
@@ -149,7 +160,12 @@ class Monitor:
             if self._cancelled():
                 raise _Cancelled
 
-            result = self._portal.login(candidate, self._config.effective_username, self._config.account.password)
+            password = self._config.account.password
+            if not password:
+                # 防御性检查：没有可用明文时绝不提交登录（不能拿空密码去试）
+                raise _CredentialsUnavailable
+
+            result = self._portal.login(candidate, self._config.effective_username, password)
             if result.ok:
                 return None
             # 登录被拒（密码错误、互踢、频控）时不再连续换码重试，交给外层退避

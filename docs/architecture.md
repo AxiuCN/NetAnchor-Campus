@@ -490,13 +490,27 @@ D8 定的是"托盘随用户登录启动，走 `HKCU\...\Run`"，但**代码里�
 - `test_cancelled_before_cycle_returns_stopped`：已取消时不探测门户。
 - 真实服务（IPC）：`monitor.stop → stopped`、`monitor.start → running`、状态回到 `online`。
 
-### #3–#6（P2）— 待修
+### #3 凭据绑定失效后仍提交空密码（P2）— 已修复
+
+**原问题**：`cycle()` 判断的是 `password or password_protected`，而不是"凭据是否真的可用"。地址变更后 `password_protected` 仍非空，于是继续探测、取码、校验，最后 `login(..., "")` 提交空密码，状态也不是 `config_missing`。
+
+**修复**：
+
+1. `cycle()` 改用 `Config.credentials_ready()`——它会校验 `password_context` 与当前门户指纹一致；不可用时直接返回 `CONFIG_MISSING`，不碰门户。
+2. `_authenticate()` 入口再检查一次明文密码，缺失就抛内部信号 `_CredentialsUnavailable`，由 `cycle()` 归为 `CONFIG_MISSING`。
+3. 登录调用前保留最后一道检查：没有明文密码绝不调用 `login`。
+
+**验证**：
+
+- `test_cipher_bound_to_other_portal_returns_config_missing`：密文绑定旧地址 → `CONFIG_MISSING`，探测/取码/登录调用数均为 0。
+- `test_empty_password_never_reaches_login`：`credentials_ready` 为真但明文缺失的边界 → 仍然不取码、不校验、不登录。
+
+### #4–#6（P2）— 待修
 
 | 编号 | 问题 | 状态 |
 |---|---|---|
-| #3 | 凭据绑定失效后仍提交空密码 | 待修 |
 | #4 | 升级备份失败后不恢复原服务 | 待修 |
 | #5 | 卸载不先关闭客户端，删除中断 | 待修 |
 | #6 | `--purge` 清理失败仍返回 0 | 待修 |
 
-另外，复审在非管理员令牌下跑测试得到 25 项 PermissionError：这是测试基建问题（ACL 用例需要管理员），不是产品缺陷，计划在修 #3–#6 时一并处理（非 ACL 用例可无管理员运行，ACL 用例显式跳过）。
+另外，复审在非管理员令牌下跑测试得到 25 项 PermissionError：这是测试基建问题（ACL 用例需要管理员），不是产品缺陷，计划在修 #4–#6 时一并处理（非 ACL 用例可无管理员运行，ACL 用例显式跳过）。

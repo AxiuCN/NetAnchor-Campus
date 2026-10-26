@@ -191,3 +191,39 @@ def test_cancel_during_validation_skips_login():
     result = monitor.cycle()
     assert result.state is State.STOPPED
     assert portal.login_calls == 0
+
+
+def test_cipher_bound_to_other_portal_returns_config_missing():
+    """#3：地址变更后旧密文不可用，不能进入探测/取码/登录。"""
+    config = make_config()
+    config.account.password = ""
+    config.account.password_protected = "cipher-for-old-portal"
+    config.account.password_context = "10.0.0.9|80|801"
+    assert config.credentials_ready() is False
+
+    portal = FakePortal()
+    monitor = Monitor(config, portal, lambda _img: "1234", lambda: False)
+    result = monitor.cycle()
+
+    assert result.state is State.CONFIG_MISSING
+    assert portal.probe_calls == 0
+    assert portal.fetch_calls == 0
+    assert portal.login_calls == 0
+
+
+def test_empty_password_never_reaches_login():
+    """即使 credentials_ready 为真（密文与地址匹配但明文缺失），也不得提交空密码。"""
+    config = make_config()
+    config.account.password = ""
+    config.account.password_protected = "cipher"
+    config.account.password_context = config.portal_fingerprint
+    assert config.credentials_ready() is True
+
+    portal = FakePortal()
+    monitor = Monitor(config, portal, lambda _img: "1234", lambda: False)
+    result = monitor.cycle()
+
+    assert result.state is State.CONFIG_MISSING
+    assert portal.fetch_calls == 0
+    assert portal.check_calls == 0
+    assert portal.login_calls == 0
