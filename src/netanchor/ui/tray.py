@@ -1,10 +1,12 @@
 """最小托盘客户端：只做 UI，状态与配置一律经由 IPC 与服务交互。"""
 from __future__ import annotations
 
+import logging
 import os
+import sys
 import threading
-import time
 import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox, ttk
 
 import pystray
@@ -12,13 +14,18 @@ import win32api
 import win32event
 from PIL import Image, ImageDraw
 
+from .. import __version__
 from ..config import CARRIER_SUFFIX
 from ..ipc import IpcError, PipeClient
+from ..logging_setup import setup_logging
 from . import autostart
+
+logger = logging.getLogger(__name__)
 
 POLL_SECONDS = 5
 SINGLE_INSTANCE_NAME = "Local\\NetAnchorCampus.Tray"
 ERROR_ALREADY_EXISTS = 183
+LOG_DIR_NAME = "NetAnchor-Campus"
 
 _instance_mutex = None
 
@@ -85,9 +92,14 @@ class TrayApp:
         self._client = client or PipeClient()
         self._status: dict = {}
         self._error = ""
-        self._icon = pystray.Icon("netanchor", make_icon("#95a5a6"), "NetAnchor-Campus")
-        self._icon.menu = self._build_menu()
+        self._connected = False
+        self._logged_connected = False
+        self._color = "#95a5a6"
+        self._icons: dict[str, Image.Image] = {}
         self._stop = threading.Event()
+        self._icon = pystray.Icon("netanchor", self._icon_for("#95a5a6"), "NetAnchor-Campus")
+        self._icon.menu = self._build_menu()
+        self._menu_signature = self._menu_state()
 
     # ---- IPC ----
     def _call(self, cmd: str, data: dict | None = None) -> dict:
@@ -103,25 +115,54 @@ class TrayApp:
             return self._call(cmd, data)
         except IpcError as exc:
             self._error = str(exc)
+            # 轮询每 5 秒一次，失败原因由 refresh 在状态切换时汇总记录，这里只留明细
+            logger.debug("IPC 调用 %s 失败: %s", cmd, exc)
             return None
 
     # ---- 刷新 ----
+    def _icon_for(self, color: str) -> Image.Image:
+        if color not in self._icons:
+            self._icons[color] = make_icon(color)
+        return self._icons[color]
+
+    def _menu_state(self) -> tuple[bool, str, str, bool]:
+        """菜单里会变化的内容。只有它变了才重建菜单。"""
+        state = str(self._status.get("state", "stopped")) if self._connected else "stopped"
+        detail = str(self._status.get("last_error") or "") if self._connected else ""
+        return self._connected, state, detail, self._autostart_enabled()
+
     def refresh(self) -> None:
         data = self._safe_call("status")
         if data is not None:
             self._status = data
-        state = str(self._status.get("state", "stopped")) if data is not None else "stopped"
-        title = status_text(self._status) if data is not None else "服务未连接"
-        self._icon.icon = make_icon(color_for_state(state) if data is not None else "#95a5a6")
+        self._connected = data is not None
+
+        state = str(self._status.get("state", "stopped")) if self._connected else "stopped"
+        title = status_text(self._status) if self._connected else "服务未连接"
+        color = color_for_state(state) if self._connected else "#95a5a6"
+        if color != self._color:
+            self._color = color
+            self._icon.icon = self._icon_for(color)
         self._icon.title = f"NetAnchor-Campus - {title}"
-        self._icon.menu = self._build_menu()
-        try:
-            self._icon.update_menu()
-        except Exception:
-            pass
+
+        # 赋值 icon.menu 会触发 pystray 的内部 update_menu（销毁并重建原生菜单句柄）。
+        # 只在内容真的变了才重建：句柄重建和消息循环里的 TrackPopupMenu 抢同一个对象，
+        # 每 5 秒无脑重建是自找竞态。
+        signature = self._menu_state()
+        if signature != self._menu_signature:
+            self._menu_signature = signature
+            self._icon.menu = self._build_menu()
+            logger.info("托盘状态更新：%s", title)
+
+        if self._connected != self._logged_connected:
+            self._logged_connected = self._connected
+            if self._connected:
+                logger.info("已连上服务：%s", title)
+            else:
+                logger.warning("与服务失联：%s", self._error or "未知原因")
 
     def _build_menu(self):
-        connected = bool(self._status) and not self._error
+        connected = self._connected and not self._error
         status_label = status_text(self._status) if connected else "服务未连接"
         return pystray.Menu(
             pystray.MenuItem(status_label, None, enabled=False),
@@ -133,38 +174,55 @@ class TrayApp:
             pystray.MenuItem("设置…", self._on_settings),
             pystray.MenuItem("打开日志目录", self._on_logs),
             pystray.MenuItem(
-                f"开机自启托盘: {'[已启用]' if autostart.is_enabled() else '[未启用]'}",
+                f"开机自启托盘: {'[已启用]' if self._autostart_enabled() else '[未启用]'}",
                 self._on_toggle_autostart,
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("退出托盘", self._on_quit),
         )
 
-    # ---- 菜单动作 ----
-    def _on_toggle_autostart(self, icon=None, item=None) -> None:
-        autostart.apply_setting(enabled=not autostart.setting_enabled())
-        self._icon.menu = self._build_menu()
+    @staticmethod
+    def _autostart_enabled() -> bool:
         try:
-            self._icon.update_menu()
-        except Exception:
-            pass
+            return autostart.is_enabled()
+        except OSError:
+            return False
+
+    # ---- 菜单动作 ----
+    def _action(self, cmd: str, label: str) -> None:
+        data = self._safe_call(cmd)
+        if data is None:
+            logger.warning("菜单动作「%s」失败：%s", label, self._error)
+        else:
+            logger.info("菜单动作「%s」成功：%s", label, data)
+
+    def _on_toggle_autostart(self, icon=None, item=None) -> None:
+        enabled = not autostart.setting_enabled()
+        applied = autostart.apply_setting(enabled=enabled)
+        logger.info("开机自启托盘 → %s（注册项已生效=%s）", "启用" if enabled else "禁用", applied)
+        self._menu_signature = self._menu_state()
+        self._icon.menu = self._build_menu()
+
     def _on_reconnect(self, icon=None, item=None) -> None:
-        self._safe_call("reconnect")
+        self._action("reconnect", "立即重连")
 
     def _on_start(self, icon=None, item=None) -> None:
-        self._safe_call("monitor.start")
+        self._action("monitor.start", "启动监控")
 
     def _on_stop(self, icon=None, item=None) -> None:
-        self._safe_call("monitor.stop")
+        self._action("monitor.stop", "停止监控")
 
     def _on_logs(self, icon=None, item=None) -> None:
         data = self._safe_call("logs.path")
         if not data:
+            logger.warning("打开日志目录失败：%s", self._error)
             messagebox.showerror("NetAnchor-Campus", self._error or "无法获取日志目录")
             return
+        logger.info("打开日志目录：%s", data.get("path"))
         os.startfile(str(data["path"]))
 
     def _on_quit(self, icon=None, item=None) -> None:
+        logger.info("用户退出托盘")
         self._stop.set()
         self._icon.stop()
 
@@ -173,9 +231,11 @@ class TrayApp:
 
     # ---- 设置窗口 ----
     def _settings_window(self) -> None:
+        logger.info("打开设置窗口")
         try:
             current = self._call("config.get")["config"]
         except IpcError as exc:
+            logger.warning("设置窗口读取配置失败：%s", exc)
             messagebox.showerror("NetAnchor-Campus", f"读取配置失败：{exc}")
             return
 
@@ -249,10 +309,15 @@ class TrayApp:
                 message = "配置已保存"
                 if result.get("password_rebound"):
                     message += "，密码已更新"
+                logger.info(
+                    "保存配置：portal_changed=%s password_rebound=%s",
+                    result.get("portal_changed"), result.get("password_rebound"),
+                )
                 messagebox.showinfo("NetAnchor-Campus", message)
                 root.destroy()
             except IpcError as exc:
                 text = str(exc)
+                logger.warning("保存配置失败：%s", text)
                 if "reauth_required" in text:
                     messagebox.showwarning(
                         "NetAnchor-Campus",
@@ -273,16 +338,52 @@ class TrayApp:
     # ---- 主循环 ----
     def _poll_loop(self) -> None:
         while not self._stop.is_set():
-            self.refresh()
-            time.sleep(POLL_SECONDS)
+            # 单次刷新失败不能让轮询线程静默死掉：图标还在、状态永远不更新最难查
+            try:
+                self.refresh()
+            except Exception:  # noqa: BLE001
+                logger.exception("刷新托盘状态时出现未预期异常，继续轮询")
+            self._stop.wait(POLL_SECONDS)
 
     def run(self) -> None:
         threading.Thread(target=self._poll_loop, daemon=True, name="TrayPoll").start()
         self._icon.run()
 
 
+def tray_log_dir() -> Path:
+    """托盘日志放用户目录：配置目录的 ACL 只给 SYSTEM/Administrators，托盘写不进去。"""
+    base = os.environ.get("LOCALAPPDATA")
+    root = Path(base) if base else Path.home() / "AppData" / "Local"
+    return root / LOG_DIR_NAME / "logs"
+
+
+def _install_excepthooks() -> None:
+    def _hook(exc_type, exc_value, exc_tb) -> None:
+        logger.critical("未捕获异常", exc_info=(exc_type, exc_value, exc_tb))
+
+    def _thread_hook(args) -> None:
+        thread_name = args.thread.name if args.thread is not None else "?"
+        logger.critical(
+            "线程 %s 未捕获异常", thread_name,
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    sys.excepthook = _hook
+    threading.excepthook = _thread_hook
+
+
 def main() -> int:
+    log_dir = tray_log_dir()
+    try:
+        setup_logging(log_dir, filename="tray.log")
+    except OSError:
+        # 日志目录不可写也不该拦住托盘，但要在启动参数里看得见
+        pass
+    _install_excepthooks()
+    logger.info("托盘启动（版本 %s，日志 %s）", __version__, log_dir)
+
     if not acquire_single_instance():
+        logger.info("已有托盘实例在运行，本次启动退出")
         try:
             import ctypes
 
@@ -294,10 +395,15 @@ def main() -> int:
         return 0
     try:
         # 用户若开着"开机自启"，每次启动都确保注册项指向当前 exe（换目录后也能自愈）
-        autostart.apply_setting()
+        applied = autostart.apply_setting()
+        logger.info("开机自启登记：%s", applied)
         TrayApp().run()
+    except Exception:  # noqa: BLE001
+        logger.exception("托盘异常退出")
+        return 1
     finally:
         release_single_instance()
+    logger.info("托盘已退出")
     return 0
 
 

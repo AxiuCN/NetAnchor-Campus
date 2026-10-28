@@ -93,7 +93,10 @@ sc.exe start NetAnchorCampus
 
 ## 日志
 
-`C:\ProgramData\NetAnchor-Campus\logs\service.log`，按天轮转保留 7 份。日志不含密码与完整请求串。
+- 服务：`C:\ProgramData\NetAnchor-Campus\logs\service.log`，按天轮转保留 7 份
+- 托盘：`%LOCALAPPDATA%\NetAnchor-Campus\logs\tray.log`，按天轮转保留 7 份（托盘以普通用户运行，写不进服务的 ACL 目录）
+
+日志不含密码与完整请求串。
 
 ## 已知限制
 

@@ -4,7 +4,9 @@
 - 管道 DACL：SYSTEM / Administrators 完全控制；INTERACTIVE 只有读写数据与同步，
   **不含 FILE_CREATE_PIPE_INSTANCE**（否则普通用户可再造一个同名实例冒充服务端）
 - 服务端首实例带 FILE_FLAG_FIRST_PIPE_INSTANCE：名字被抢占时启动即失败，而不是静默共存
-- 客户端在发送任何数据前校验对端：进程令牌为 LocalSystem 且镜像为 NetAnchor.Service.exe
+- 客户端在发送任何数据前校验对端：它必须是 SCM 里登记为 LocalSystem、
+  影像为 NetAnchor.Service.exe 的那个服务进程。核对走 SCM 而不是读对端令牌，
+  因为普通用户读不到 SYSTEM 进程的令牌（OpenProcess 直接 ERROR_ACCESS_DENIED）
 """
 from __future__ import annotations
 
@@ -20,7 +22,6 @@ from pathlib import Path
 from typing import Callable
 
 import pywintypes
-import win32api
 import win32file
 import win32pipe
 import win32security
@@ -45,7 +46,7 @@ FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000
 MAX_FRAME = 64 * 1024
 PROTOCOL_VERSION = 1
 
-SYSTEM_SID = "S-1-5-18"
+SYSTEM_ACCOUNTS = {"localsystem", "nt authority\\system", "system"}
 DEFAULT_SERVER_IMAGE = "NetAnchor.Service.exe"
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
@@ -53,10 +54,6 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 kernel32.GetNamedPipeServerProcessId.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.ULONG)]
 kernel32.GetNamedPipeServerProcessId.restype = wintypes.BOOL
-kernel32.QueryFullProcessImageNameW.argtypes = [
-    wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
-]
-kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
 
 
 class IpcError(Exception):
@@ -132,45 +129,83 @@ def server_pid(handle) -> int:
     return 0
 
 
-def _process_image(proc_handle) -> str:
-    size = wintypes.DWORD(32768)
-    buffer = ctypes.create_unicode_buffer(size.value)
-    if not kernel32.QueryFullProcessImageNameW(int(proc_handle), 0, buffer, ctypes.byref(size)):
-        return ""
-    return buffer.value
+def registered_service(service_name: str = SERVICE_NAME) -> tuple[int, str, str] | None:
+    """向 SCM 查询服务登记的（进程 ID、运行账户、影像路径）。
+
+    普通用户有权查询服务状态与配置（改配置才需要管理员），所以客户端不必提权。
+    服务未安装、查询被拒或查询失败一律返回 None。
+    """
+    try:
+        scm = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_CONNECT)
+    except win32service.error:
+        return None
+    try:
+        try:
+            service = win32service.OpenService(
+                scm,
+                service_name,
+                win32service.SERVICE_QUERY_STATUS | win32service.SERVICE_QUERY_CONFIG,
+            )
+        except win32service.error:
+            return None
+        try:
+            # pywin32 的 QueryServiceStatusEx 只接受句柄，返回含 ProcessId 的字典；
+            # QueryServiceConfig 返回位置元组：(类型, 启动类型, 错误控制, BinaryPathName,
+            # LoadOrderGroup, TagId, Dependencies, ServiceStartName, DisplayName)
+            status = win32service.QueryServiceStatusEx(service)
+            config = win32service.QueryServiceConfig(service)
+            process_id = int(status["ProcessId"])
+            account = str(config[7])
+            binary_path = str(config[3])
+        finally:
+            win32service.CloseServiceHandle(service)
+        return process_id, account, binary_path
+    except win32service.error:
+        return None
+    finally:
+        win32service.CloseServiceHandle(scm)
 
 
-def _token_user_sid(token) -> str:
-    info = win32security.GetTokenInformation(token, win32security.TokenUser)
-    sid = info[0] if isinstance(info, tuple) else info
-    return win32security.ConvertSidToStringSid(sid)
+def identity_problem(
+    pid: int,
+    registered: tuple[int, str, str] | None,
+    expected_image: str = DEFAULT_SERVER_IMAGE,
+    service_name: str = SERVICE_NAME,
+) -> str:
+    """纯判定：对端 PID 与 SCM 登记信息是否自洽。空串表示通过，否则返回原因。
+
+    比对三项：登记的进程就是管道对端、账户是 LocalSystem、影像是预期文件。
+    能改这三项的只有管理员，因此与"直接读对端令牌"等价。
+    """
+    if not pid:
+        return "无法取得管道对端的进程 ID"
+    if registered is None:
+        return f"无法读取服务 {service_name} 的登记信息（未安装或查询被拒）"
+    service_pid, account, binary_path = registered
+    if service_pid != pid:
+        return f"管道对端 PID {pid} 与服务登记的进程 {service_pid} 不一致"
+    if account.strip().lower() not in SYSTEM_ACCOUNTS:
+        return f"服务登记的运行账户为 {account}，不是 LocalSystem"
+    image = Path(binary_path.strip().strip('"')).name
+    if image.lower() != expected_image.lower():
+        return f"服务登记的影像为 {image}，不是 {expected_image}"
+    return ""
+
+
+def check_server_identity(
+    handle,
+    expected_image: str = DEFAULT_SERVER_IMAGE,
+    service_name: str = SERVICE_NAME,
+) -> str:
+    """发送任何请求之前校验对端；空串表示通过，否则返回拒绝原因。"""
+    return identity_problem(
+        server_pid(handle), registered_service(service_name), expected_image, service_name
+    )
 
 
 def verify_server_identity(handle, expected_image: str = DEFAULT_SERVER_IMAGE) -> bool:
-    """校验管道对端：SYSTEM 令牌 + 指定镜像名。
-
-    在发送任何请求之前调用；任何一步失败都返回 False。
-    """
-    pid = server_pid(handle)
-    if not pid:
-        return False
-    try:
-        process = win32api.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-    except Exception:  # 打不开就当作不可信
-        return False
-    try:
-        try:
-            token = win32security.OpenProcessToken(process, win32security.TOKEN_QUERY)
-            if _token_user_sid(token) != SYSTEM_SID:
-                return False
-        except Exception:
-            return False
-        image = _process_image(process)
-        if not image:
-            return False
-        return Path(image).name.lower() == expected_image.lower()
-    finally:
-        win32api.CloseHandle(process)
+    """`check_server_identity` 的布尔包装。"""
+    return check_server_identity(handle, expected_image) == ""
 
 
 # ---------------- 服务端 ----------------
@@ -362,6 +397,7 @@ class PipeClient:
 
     def _connect(self):
         deadline = time.monotonic() + self._timeout_ms / 1000
+        retry_missing: bool | None = None
         while True:
             try:
                 return win32file.CreateFile(
@@ -369,7 +405,16 @@ class PipeClient:
                     win32file.OPEN_EXISTING, 0, None,
                 )
             except pywintypes.error as exc:
-                if exc.winerror == 231 and time.monotonic() < deadline:  # PIPE_BUSY
+                retryable = False
+                if exc.winerror == 231:  # ERROR_PIPE_BUSY：上一个连接还没断开
+                    retryable = True
+                elif exc.winerror == 2:  # ERROR_FILE_NOT_FOUND
+                    # 服务端只挂一个实例，处理完一个请求到建下一个实例之间有毫秒级空窗，
+                    # 撞上就表现为"管道不存在"。只有服务确实在跑才值得等，否则快速报错。
+                    if retry_missing is None:
+                        retry_missing = service_state() == "running"
+                    retryable = retry_missing
+                if retryable and time.monotonic() < deadline:
                     time.sleep(0.05)
                     continue
                 hint = _connect_hint(exc.winerror)
@@ -380,11 +425,10 @@ class PipeClient:
         payload = encode_frame({"v": PROTOCOL_VERSION, "id": request_id, "cmd": cmd, "data": data or {}})
         handle = self._connect()
         try:
-            if not self._allow_insecure and not verify_server_identity(handle, self._expected_image):
-                raise IpcError(
-                    "无法确认服务端身份（需要 LocalSystem 且镜像为 "
-                    f"{self._expected_image}），已拒绝发送请求"
-                )
+            if not self._allow_insecure:
+                problem = check_server_identity(handle, self._expected_image)
+                if problem:
+                    raise IpcError(f"无法确认服务端身份（{problem}），已拒绝发送请求")
             win32file.WriteFile(handle, payload)
             _err, raw = win32file.ReadFile(handle, MAX_FRAME)
         except pywintypes.error as exc:

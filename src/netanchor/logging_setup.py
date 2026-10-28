@@ -16,6 +16,7 @@ def setup_logging(
     level: str = "INFO",
     max_files: int = 7,
     console: bool = False,
+    filename: str = "service.log",
 ) -> logging.Logger:
     directory = Path(log_dir)
     directory.mkdir(parents=True, exist_ok=True)
@@ -30,7 +31,7 @@ def setup_logging(
         handler.close()
 
     file_handler = logging.handlers.TimedRotatingFileHandler(
-        filename=directory / "service.log",
+        filename=directory / filename,
         when="midnight",
         backupCount=max_files,
         encoding="utf-8",

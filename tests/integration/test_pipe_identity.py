@@ -18,6 +18,8 @@ from netanchor.ipc import (
     IpcError,
     PipeClient,
     PipeServer,
+    check_server_identity,
+    identity_problem,
     verify_server_identity,
 )
 
@@ -114,6 +116,56 @@ def test_verify_server_identity_false_for_non_system(pipe_name):
             assert verify_server_identity(handle, DEFAULT_SERVER_IMAGE) is False
         finally:
             handle.Close()
+    finally:
+        server.stop()
+        server.join(timeout=3)
+
+
+# ---- 身份判定（纯逻辑：用 SCM 登记的进程 / 账户 / 影像核对） ----
+
+def test_identity_problem_accepts_matching_registration():
+    assert identity_problem(1234, (1234, "LocalSystem", r"C:\X\NetAnchor.Service.exe")) == ""
+
+
+def test_identity_problem_accepts_quoted_registered_path():
+    """SCM 的 BinaryPathName 带引号，取文件名时应剥掉。"""
+    registered = (1234, "LocalSystem", r'"D:\Program Files\NetAnchor-Campus\NetAnchor.Service.exe"')
+    assert identity_problem(1234, registered) == ""
+
+
+def test_identity_problem_rejects_pid_mismatch():
+    reason = identity_problem(1234, (999, "LocalSystem", r"C:\X\NetAnchor.Service.exe"))
+    assert "不一致" in reason
+
+
+def test_identity_problem_rejects_non_system_account():
+    reason = identity_problem(1234, (1234, "NT AUTHORITY\\LocalService", r"C:\X\NetAnchor.Service.exe"))
+    assert "LocalSystem" in reason
+
+
+def test_identity_problem_rejects_wrong_image():
+    reason = identity_problem(1234, (1234, "LocalSystem", r"C:\X\Other.Service.exe"))
+    assert "Other.Service.exe" in reason
+
+
+def test_identity_problem_reports_missing_service():
+    assert "无法读取服务" in identity_problem(1234, None)
+
+
+def test_check_server_identity_explains_rogue_instance(pipe_name):
+    """冒充实例：拒绝理由要具体到"哪一项不符"，而不是只说身份不明。"""
+    calls = []
+    server = _start_rogue(pipe_name, calls)
+    try:
+        handle = win32file.CreateFile(
+            pipe_name, PIPE_ACCESS_CLIENT, 0, None, win32file.OPEN_EXISTING, 0, None
+        )
+        try:
+            reason = check_server_identity(handle)
+        finally:
+            handle.Close()
+        assert reason, "冒充实例必须给出非空的拒绝原因"
+        assert ("不一致" in reason) or ("无法读取服务" in reason)
     finally:
         server.stop()
         server.join(timeout=3)

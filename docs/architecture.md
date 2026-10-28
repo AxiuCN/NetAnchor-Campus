@@ -118,7 +118,7 @@ C:\Program Files\NetAnchor-Campus\
 - 客户端连接失败会区分原因：服务未安装 / 服务未运行 / 服务在跑但管道未创建
 - DACL：`SYSTEM` / `Administrators` 完全控制；`INTERACTIVE`（S-1-5-4）只有 `0x100083`（读数据、写数据、读属性、同步），**不含 `FILE_CREATE_PIPE_INSTANCE`**——普通用户无法再造同名实例冒充服务端
 - 服务端首实例带 `FILE_FLAG_FIRST_PIPE_INSTANCE`：名字已被占用时启动即失败并记日志，不与冒充实例共存
-- **客户端校验服务端**：发请求前取 `GetNamedPipeServerProcessId`，要求对端令牌为 `S-1-5-18`（LocalSystem）且镜像为 `NetAnchor.Service.exe`；任何一步失败就拒绝发送（开发态可用 `NA_IPC_INSECURE=1` 放行）
+- **客户端校验服务端**：发请求前取 `GetNamedPipeServerProcessId`，再向 SCM 查询 `NetAnchorCampus` 的登记信息，要求**管道对端就是服务登记的进程**、运行账户为 `LocalSystem`、影像为 `NetAnchor.Service.exe`；任何一项不符就拒绝发送并给出具体原因（开发态可用 `NA_IPC_INSECURE=1` 放行）。核对走 SCM 而不是读对端令牌——普通用户对 SYSTEM 进程 `OpenProcess` 会直接被拒（见 §24）
 - 服务端逐请求校验客户端：`GetNamedPipeClientProcessId` + `OpenProcessToken`，记录调用者 SID / 会话 ID / PID；提权状态只写审计日志，不再作为放行条件
 - 授权：读写命令都对 `INTERACTIVE` 开放。敏感组合（凭据 ↔ 门户地址）由密文绑定保护，而不是由提权门槛保护
 - 帧：4 字节小端长度 + UTF-8 JSON；上限 64 KB；超时 5 s
@@ -483,6 +483,8 @@ IPC 鉴权实现要点：服务端用 `GetNamedPipeClientProcessId` 取调用者
 
 **残余**：拿到 SYSTEM 令牌的攻击者不受这层保护——但那已经超出本工具的安全边界。
 
+**2026-10-28 修订**：上述"校验对端令牌"的做法在普通用户下必然失败（`OpenProcess` 直接被拒），已改为向 SCM 核对登记信息，见 §24。
+
 ### #2 停止超时后线程引用被清空（P2）— 已修复
 
 **原问题**：`_stop_monitor` 在 `join(10)` 之后无条件把引用置空；而 OCR 子进程超时是 30 s，线程可能仍在认证。再点"启动"就会起第二个线程，出现并行认证。
@@ -601,3 +603,90 @@ Windows 加载 `win32\win32file.pyd` 时解析到根目录那份，而 Python �
 - 单元/集成测试：`129 passed, 2 skipped`（含"客户端连上就断，服务端仍可继续响应"用例）。
 - 打包产物：`_internal` 只剩一份 `pywin32_system32\pywintypes314.dll`。
 - 冻结服务实测：模拟客户端连上即断后，日志无异常、管道仍存在、后续 `version` 请求正常返回。
+
+## 24. 客户端身份校验在普通用户下必然失败（2026-10-28）
+
+### 现象
+
+真机（0.2.3）上，托盘只要发 IPC 就报：
+
+```
+读取配置失败：无法确认服务端身份（需要 LocalSystem 且镜像为 NetAnchor.Service.exe），已拒绝发送请求
+```
+
+CLI 的 `--version` / `status` 全部正常——因为它不走 IPC，只读注册表和服务注册信息。服务本身也正常：`RUNNING`、管道存在、监控在跑。**只有托盘这条路径全废**，包括状态刷新、设置、立即重连、启动/停止监控。
+
+### 根因
+
+§22 #1 引入的校验读的是**对端进程令牌**：
+
+```python
+win32api.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+win32security.OpenProcessToken(process, TOKEN_QUERY)
+```
+
+服务跑在 `LocalSystem` 下，而普通用户（哪怕是管理员账户，只要令牌被 UAC 过滤）对 SYSTEM 进程调用 `OpenProcess` 会直接得到 `ERROR_ACCESS_DENIED(5)`。代码把"打不开"和"身份不可信"混为一谈（`except: return False`），于是校验恒为 False，客户端拒绝发送任何请求。
+
+这是**结构性必然**，不是偶发：托盘本来就是给普通用户点的，而校验要求提权。此前所有验证都在提权上下文（或 `NA_IPC_INSECURE=1`）下进行，所以一直没暴露。
+
+实测（同一段 ctypes 探测，两种身份）：
+
+| 步骤 | 提权 | 非提权（`runas /trustlevel:0x20000`） |
+|---|---|---|
+| 打开管道 | ✅ | ✅ |
+| `GetNamedPipeServerProcessId` | ✅ | ✅ |
+| `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` | ✅ | ❌ `GetLastError=5` |
+
+### 修复（0.2.4）
+
+改为向 SCM 核对，不再读对端令牌。普通用户有权查询服务状态与配置（**改**配置才需要管理员），实测三项都可读：
+
+| 手段 | 非提权 | 用途 |
+|---|---|---|
+| `QueryServiceStatusEx(SC_STATUS_PROCESS_INFO)` | ✅ | 服务登记的进程 ID |
+| `QueryServiceConfig` | ✅ | 运行账户、影像路径（改它需要管理员） |
+| `GetNamedPipeServerProcessId` | ✅ | 管道对端的进程 ID |
+
+判定三项（`identity_problem`）：管道对端 PID == 服务登记的 PID；登记账户属于 LocalSystem；登记影像文件名为 `NetAnchor.Service.exe`。
+
+**安全语义等价**：原来问"对端令牌是不是 SYSTEM"，现在问"对端是不是那个被 SCM 登记为 LocalSystem 的服务进程"。要冒充，得能在 SCM 里登记一个 LocalSystem 服务（需管理员），再抢占管道名（DACL 已不给 `INTERACTIVE` 创建实例的权限，服务端还带 `FILE_FLAG_FIRST_PIPE_INSTANCE`）——两条路都要求管理员，与原方案的前提一致。
+
+**顺带改了报错**：失败时返回具体原因（对端 PID 不一致 / 账户不是 LocalSystem / 影像不符 / 服务未安装），不再一律"身份不明"，便于现场判断。
+
+### 验证
+
+- 纯逻辑用例：PID 不一致、账户非 LocalSystem、影像不符、服务未登记、SCM 路径带引号，五种情形各有断言
+- 冒充实例（普通用户进程建的管道）：仍被拒绝，且拒绝原因写明是哪一项不符
+- 真机托盘改观：待装 0.2.4 后验证（`status` 能读到状态即通过）
+
+### 未做的
+
+本次只修"连不上"这个致命项。托盘自身的可观测性与菜单重建问题在同一版本的 §25 一并处理。
+
+## 25. 托盘可观测性与 IPC 重连（0.2.4）
+
+### 背景
+
+1. **托盘没有任何日志**：`console=False`、无 `sys.excepthook`、无轮询兜底。现场那一次 `NetAnchor.Tray.exe` 崩溃（`c0000005` @ `ntdll.dll`，WER 里有 `FaultTolerantHeap` 记录，说明系统怀疑堆被写坏）只留下了 WER 一条记录，服务日志里一个字都没有；日志里只有同一时刻的 `状态 -> stopped` 与 `portal_unreachable`。轮询线程一旦抛非 `IpcError` 异常就静默死亡，表现为"图标还在、菜单还在、状态永远不动"。
+2. **每 5 秒重建整棵菜单**：pystray 的 win32 后端在 `_update_menu()` 里 `DestroyMenu` + 重建原生句柄，而 `menu` 的 setter 本身就会触发一次 `update_menu()`——原代码每次刷新等于重建两次。轮询线程和消息循环里正在 `TrackPopupMenuEx` 的句柄是同一个对象，属于竞态。
+3. **连续 IPC 请求约 5% 失败**：服务端只挂一个管道实例，处理完一个请求到建下一个之间有毫秒级空窗，客户端撞上就得到 `ERROR_FILE_NOT_FOUND(2)`，而 `_connect` 只对 `ERROR_PIPE_BUSY(231)` 重试。实测 20 次连续请求失败 1 次。
+
+### 改法
+
+- **日志**：托盘写 `%LOCALAPPDATA%\NetAnchor-Campus\logs\tray.log`（按天轮转 7 份），装 `sys.excepthook` 与 `threading.excepthook`；启动、单实例退出、IPC 失联/恢复、菜单动作、自启开关变更都留痕。托盘以普通用户运行，写不进 `C:\ProgramData\...` 的 ACL 目录，所以日志分开。
+- **轮询**：单次 `refresh()` 异常记 `exception` 后继续；用 `Event.wait(POLL_SECONDS)` 取代 `time.sleep`，退出托盘时立刻收手。
+- **菜单**：只在 `(连通, state, last_error, 自启开关)` 变化时重建；图标按颜色缓存，不再每次刷新都新造 PIL 图。
+- **连接**：`_connect` 对 `ERROR_FILE_NOT_FOUND(2)` 也在超时窗口内重试，但**仅当 SCM 报告服务 RUNNING 时**——服务真没装/没跑仍然快速报"服务未安装 / 未运行"，不拖 5 秒。
+
+### 验证
+
+- 非提权连续 20 次 `status`：修复前 1 次失败，修复后待测
+- 托盘日志文件按预期生成、含启动与状态行（待真机）
+- 测试套件：`144 passed, 2 skipped`
+
+### 残余
+
+- 菜单重建仍发生在轮询线程，只是频率从"每 5 秒"降到"状态变化时"。要彻底消除竞态，得让 UI 完全单线程（自建消息循环或换掉 pystray），本轮未做。
+- 那次 `c0000005` 的真实调用栈仍然没有：本机已开启 LocalDumps（诊断期临时配置，用完清除），只能对之后的崩溃生效。
+
+
