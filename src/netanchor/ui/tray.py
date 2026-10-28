@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw
 
 from ..config import CARRIER_SUFFIX
 from ..ipc import IpcError, PipeClient
+from . import autostart
 
 POLL_SECONDS = 5
 SINGLE_INSTANCE_NAME = "Local\\NetAnchorCampus.Tray"
@@ -131,11 +132,22 @@ class TrayApp:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("设置…", self._on_settings),
             pystray.MenuItem("打开日志目录", self._on_logs),
+            pystray.MenuItem(
+                f"开机自启托盘: {'[已启用]' if autostart.is_enabled() else '[未启用]'}",
+                self._on_toggle_autostart,
+            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("退出托盘", self._on_quit),
         )
 
     # ---- 菜单动作 ----
+    def _on_toggle_autostart(self, icon=None, item=None) -> None:
+        autostart.apply_setting(enabled=not autostart.setting_enabled())
+        self._icon.menu = self._build_menu()
+        try:
+            self._icon.update_menu()
+        except Exception:
+            pass
     def _on_reconnect(self, icon=None, item=None) -> None:
         self._safe_call("reconnect")
 
@@ -281,6 +293,8 @@ def main() -> int:
             pass
         return 0
     try:
+        # 用户若开着"开机自启"，每次启动都确保注册项指向当前 exe（换目录后也能自愈）
+        autostart.apply_setting()
         TrayApp().run()
     finally:
         release_single_instance()
