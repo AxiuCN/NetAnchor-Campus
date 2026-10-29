@@ -107,7 +107,12 @@ class Monitor:
             timeout=self._config.portal.probe_timeout_seconds,
         )
         if candidate is None:
-            return self._fail(State.PORTAL_UNREACHABLE, "所有门户候选均不可达")
+            # 带上具体失败原因：只写"不可达"会让人以为是断网，实际可能只是地址拼错
+            reason = str(getattr(self._portal, "last_probe_error", "") or "")
+            detail = "所有门户候选均不可达"
+            if reason:
+                detail = f"{detail}（{reason[:160]}）"
+            return self._fail(State.PORTAL_UNREACHABLE, detail)
 
         try:
             failure = self._authenticate(candidate)

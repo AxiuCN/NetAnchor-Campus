@@ -97,6 +97,17 @@ def test_portal_unreachable():
     assert result.consecutive_failures == 1
 
 
+def test_portal_unreachable_carries_probe_reason():
+    """状态里要带出探测失败的具体原因，否则"不可达"会被误读成断网。"""
+    portal = FakePortal()
+    portal.pick_candidate = lambda candidates, timeout=None: None
+    portal.last_probe_error = "getaddrinfo failed"
+    monitor, _ = make_monitor(portal, [False], [])
+    result = monitor.cycle()
+    assert result.state is State.PORTAL_UNREACHABLE
+    assert "getaddrinfo failed" in result.detail
+
+
 def test_captcha_retries_up_to_limit():
     portal = FakePortal(check_ok=False)
     monitor, _ = make_monitor(portal, [False], ["1111", "2222", "3333"])

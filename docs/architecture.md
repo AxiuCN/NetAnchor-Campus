@@ -440,14 +440,17 @@ IPC 鉴权实现要点：服务端用 `GetNamedPipeClientProcessId` 取调用者
 
 **当前结论**：**先维持 CLI 安装方式**，等 P6 真机验收有结论后再评估是否值得投入。不为了形式上的完整而叠加一套未经验证的安装器。
 
-### 托盘开机自启（0.2.3 已实现）
+### 托盘开机自启（0.2.3 引入，0.2.5 改为机器级）
 
-托盘启动时按用户开关同步 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`：
+机器级注册项由**安装程序**写、卸载时删，全体本地用户登录都会拉起托盘：
 
-- 开关存 `HKCU\Software\NetAnchor-Campus\TrayAutostart`，默认开启
-- 开启时写入 `"<安装目录>\NetAnchor.Tray.exe"`；每次启动都会重写，换目录后能自愈
-- 托盘菜单提供「开机自启托盘: [已启用]/[未启用]」切换
-- 仅对打包后的 exe 生效；开发态（python 直接运行）不写注册表
+- `HKLM\Software\Microsoft\Windows\CurrentVersion\Run\NetAnchor-Campus Tray` = `"<安装目录>\NetAnchor.Tray.exe" --autostart`
+- `install` / `upgrade` 写（换目录后指向新路径），`uninstall` 删
+- 用户级开关存 `HKCU\Software\NetAnchor-Campus\TrayAutostart`，默认开启：关掉后，托盘被自启拉起时读到开关即退出（`--autostart` 用来区分"自启"与"手动双击"），手动启动不受影响
+- 菜单里仍是「开机自启托盘: [已启用]/[未启用]」；关闭只能清当前用户的 HKCU 残留，删 HKLM 需要管理员
+- 自启拉起的重复实例静默退出，不弹框（否则每次登录都会看到"已经在运行"）
+
+为什么 0.2.3 的 HKCU 方案不行：自启项由托盘自己写，**哪个用户没启动过托盘，那个用户就没有自启项**。真机验证：只有运行过托盘的那个账户有 `Run` 值，切换到其他本地用户后托盘根本不启动。
 
 这是"调用程序自身能力"的实现方式：没有快捷方式、没有 vbs，也不代替程序管理生命周期。
 
@@ -689,4 +692,39 @@ win32security.OpenProcessToken(process, TOKEN_QUERY)
 - 菜单重建仍发生在轮询线程，只是频率从"每 5 秒"降到"状态变化时"。要彻底消除竞态，得让 UI 完全单线程（自建消息循环或换掉 pystray），本轮未做。
 - 那次 `c0000005` 的真实调用栈仍然没有：本机已开启 LocalDumps（诊断期临时配置，用完清除），只能对之后的崩溃生效。
 
+## 26. 门户地址被填成完整 URL，导致永远不自动登录（2026-10-29）
+
+### 现象
+
+真机 0.2.4：`2026-10-29 06:34:47` 掉线后，`portal_unreachable` 连续 85 次、持续 6.5 小时，直到 `13:09:19` 才"恢复在线"——那是用户自己在浏览器里登录后 `check_url` 通了，不是程序登的。用户反馈：**重连一直是手动做的**。
+
+### 根因
+
+`config.json` 里 `portal.candidates[0].host` 是 **`http://192.168.115.8/`**（`config.json` 与 `config.json.bak` 一致，自 10-27 安装起就是），而 `_base()` 无条件拼 `f"http://{host}"`：
+
+```
+http://http://192.168.115.8/   →   getaddrinfo failed
+```
+
+`PortalCandidate` 只校验 host 非空，托盘设置窗口把输入原样落盘，于是这个值一路活到最后。`pick_candidate()` 又把每个候选的异常记在 DEBUG 级，状态里只剩"所有门户候选均不可达"——看起来像断网，实际是 URL 非法。
+
+同一台机器上用**正确地址**复测：`probe` 3/3 返回 True；`curl` 门户首页 `200 + Server: DrcomServer1.0`，801 取码端口也通。网络与门户都没问题。
+
+### 修复（0.2.5）
+
+- `normalize_host()`：剥掉协议头、路径、空白，`_base` / `_eportal` 统一走它。
+- **不改存储值**：host 参与凭据指纹（`portal_fingerprint`），改了会让已保存的密码失效；只规整请求侧。真机验证：原配置未做任何修改，probe 3/3 通过，密码继续可用。
+- `PortalClient.last_probe_error` 记录每个候选的失败原因，状态 detail 与日志都带出来；日志按原因去重，离线时不刷屏。
+
+### 验证（0.2.5 真机，未提交登录）
+
+- 原配置**未做任何修改**：`_base()` 由 `http://http://192.168.115.8/` 变为 `http://192.168.115.8`，`probe` 3/3 返回 True
+- 取码：`/eportal/?c=main&a=getCode` 返回 797 字节 GIF
+- 识别：用打包的 `NetAnchor.Ocr.exe` 识别该图，得到 4 位文本，耗时 0.7 s
+- 未提交登录（避免与用户当前会话互踢），`验证码校验`、`登录`、`登录后复检` 仍待自然掉线时验收
+
+### 未做
+
+- 保存时不做规范化或拒绝：一旦把 `http://...` 存成 `192.168.115.8`，指纹变化、密码失效。真要收敛输入，需要先在 UI 里明确"改地址 = 重输密码"。
+- 手动登录/自动登录的完整闭环仍要在下一次自然掉线时验收。
 

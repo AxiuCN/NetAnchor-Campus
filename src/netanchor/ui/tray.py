@@ -198,8 +198,17 @@ class TrayApp:
 
     def _on_toggle_autostart(self, icon=None, item=None) -> None:
         enabled = not autostart.setting_enabled()
-        applied = autostart.apply_setting(enabled=enabled)
-        logger.info("开机自启托盘 → %s（注册项已生效=%s）", "启用" if enabled else "禁用", applied)
+        autostart.set_setting(enabled)
+        if enabled:
+            applied = autostart.ensure_registered()
+        else:
+            # 机器级注册项要管理员才能删，这里只清用户级项；下次登录被拉起时
+            # 由 --autostart + 开关判断直接退出
+            autostart.unregister()
+            applied = False
+        logger.info(
+            "开机自启托盘 → %s（注册项已生效=%s）", "启用" if enabled else "禁用", applied
+        )
         self._menu_signature = self._menu_state()
         self._icon.menu = self._build_menu()
 
@@ -372,7 +381,8 @@ def _install_excepthooks() -> None:
     threading.excepthook = _thread_hook
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
     log_dir = tray_log_dir()
     try:
         setup_logging(log_dir, filename="tray.log")
@@ -382,21 +392,32 @@ def main() -> int:
     _install_excepthooks()
     logger.info("托盘启动（版本 %s，日志 %s）", __version__, log_dir)
 
+    if autostart.is_autostart_launch(args) and not autostart.setting_enabled():
+        # 机器级注册项对所有用户生效，用户的"关闭"由这里兑现
+        logger.info("本用户已关闭托盘开机自启，本次自启退出")
+        return 0
+
     if not acquire_single_instance():
         logger.info("已有托盘实例在运行，本次启动退出")
-        try:
-            import ctypes
+        if not autostart.is_autostart_launch(args):
+            # 手动双击才提示；开机自启的重复实例静默退出，免得每次登录弹一次框
+            try:
+                import ctypes
 
-            ctypes.windll.user32.MessageBoxW(
-                None, "NetAnchor-Campus 托盘已经在运行。", "NetAnchor-Campus", 0x40
-            )
-        except Exception:  # noqa: BLE001
-            pass
+                ctypes.windll.user32.MessageBoxW(
+                    None, "NetAnchor-Campus 托盘已经在运行。", "NetAnchor-Campus", 0x40
+                )
+            except Exception:  # noqa: BLE001
+                pass
         return 0
     try:
-        # 用户若开着"开机自启"，每次启动都确保注册项指向当前 exe（换目录后也能自愈）
-        applied = autostart.apply_setting()
-        logger.info("开机自启登记：%s", applied)
+        if autostart.setting_enabled():
+            # 安装程序写过 HKLM 项就直接用；老版本没有时才补写 HKCU（自愈）
+            registered = autostart.ensure_registered()
+            logger.info("开机自启登记：%s", registered)
+        else:
+            autostart.unregister()
+            logger.info("开机自启已关闭（机器级注册项由本开关否决）")
         TrayApp().run()
     except Exception:  # noqa: BLE001
         logger.exception("托盘异常退出")

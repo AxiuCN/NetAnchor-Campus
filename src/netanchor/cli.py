@@ -20,6 +20,7 @@ from .config_store import ConfigStore
 from .service_main import SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME, SERVICE_NAME
 
 SERVICE_EXE_NAME = "NetAnchor.Service.exe"
+TRAY_EXE_NAME = "NetAnchor.Tray.exe"
 # 仅作为"未指定 --dir 时"的默认值；实际安装位置以服务注册的 ImagePath 为准
 DEFAULT_INSTALL_DIR = Path(r"C:\Program Files\NetAnchor-Campus")
 APP_REG_KEY = r"SOFTWARE\NetAnchor-Campus"
@@ -272,6 +273,44 @@ def _delete_service() -> None:
 
 # ---------------- 命令 ----------------
 
+def _register_tray_autostart(target: Path) -> None:
+    """写机器级托盘自启项（HKLM），让任何本地用户登录都能拿到托盘。
+
+    只有打包后的 CLI 才动机器级注册表：从源码运行（开发、测试）时不碰真实环境。
+    托盘自己的菜单仍可给单个用户关掉；失败不阻断安装，但要看得见。
+    """
+    from .ui.autostart import register_machine, unregister
+
+    if not getattr(sys, "frozen", False):
+        print("托盘自启: 跳过（非打包运行）")
+        return
+
+    exe = target / TRAY_EXE_NAME
+    try:
+        if register_machine(exe):
+            print(f"托盘自启: HKLM 注册项 -> {exe}")
+        else:
+            print("托盘自启: 跳过（未取到托盘路径）")
+    except OSError as exc:
+        print(f"警告: 托盘自启登记失败（托盘仍可手动启动）: {exc}", file=sys.stderr)
+    # 迁移：老版本写过 HKCU，留着会和机器级项一起把托盘拉起两份。
+    # 这里只能清当前账户（执行安装的管理员）那一份，其他用户的那份由托盘自启时静默去重。
+    try:
+        unregister()
+    except OSError:
+        pass
+
+
+def _unregister_tray_autostart() -> None:
+    from .ui.autostart import unregister_machine
+
+    if not getattr(sys, "frozen", False):
+        print("托盘自启: 跳过（非打包运行）")
+        return
+    unregister_machine()
+    print("已移除托盘自启注册项")
+
+
 def install(source: Path | None = None, start: bool = True, target_dir: Path | None = None) -> int:
     if query_state() is not None:
         print("服务已存在，请使用 upgrade", file=sys.stderr)
@@ -299,6 +338,7 @@ def install(source: Path | None = None, start: bool = True, target_dir: Path | N
     _create_service(target / SERVICE_EXE_NAME)
     _set_failure_actions()
     _remember_install_dir(target)
+    _register_tray_autostart(target)
     print(f"服务已创建: {SERVICE_NAME}（安装目录 {target}）")
     if start:
         _start()
@@ -351,6 +391,8 @@ def upgrade(source: Path | None = None) -> int:
         # （例如根目录的 pywintypes314.dll，会让旧缺陷继续生效）。
         _remove_tree(target)
         _copy_tree(src, target)
+        # 安装目录可能换过，注册项跟着指向新路径（换目录后仍能自启）
+        _register_tray_autostart(target)
         _start()
     except Exception as exc:  # noqa: BLE001
         print(f"升级失败，正在恢复: {exc}", file=sys.stderr)
@@ -391,6 +433,8 @@ def uninstall(purge: bool = False) -> int:
 
     print("结束托盘与 OCR 进程")
     _close_running_clients()
+
+    _unregister_tray_autostart()
 
     target = installed_dir()
     backup = backup_dir_for(target)

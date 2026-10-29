@@ -5,6 +5,7 @@ import pytest
 from netanchor import cli
 from netanchor.cli import (
     _copy_tree,
+    _register_tray_autostart,
     _remove_tree,
     build_parser,
     default_source,
@@ -12,6 +13,14 @@ from netanchor.cli import (
     parse_image_path,
     query_state,
 )
+from netanchor.ui import autostart
+
+
+def test_register_tray_autostart_is_noop_when_not_frozen(tmp_path):
+    """从源码运行（开发、测试）时不能改机器级注册表。"""
+    assert not getattr(cli.sys, "frozen", False)
+    _register_tray_autostart(tmp_path)
+    assert autostart.machine_entry() is None
 
 
 def test_copy_tree(tmp_path):

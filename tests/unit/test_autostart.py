@@ -1,4 +1,5 @@
 """托盘开机自启：注册项读写与会话级开关。"""
+import ctypes
 import uuid
 import winreg
 from pathlib import Path
@@ -6,6 +7,23 @@ from pathlib import Path
 import pytest
 
 from netanchor.ui import autostart
+
+
+def _is_admin() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@pytest.fixture()
+def machine_key():
+    key = rf"Software\NetAnchor-Test-{uuid.uuid4().hex}"
+    yield key
+    try:
+        winreg.DeleteKey(winreg.HKEY_LOCAL_MACHINE, key)
+    except OSError:
+        pass
 
 
 @pytest.fixture()
@@ -80,3 +98,22 @@ def test_apply_setting_enables_again(keys):
     # 非 frozen 环境拿不到 exe，注册不会真的发生；开关本身应被打开
     assert autostart.setting_enabled(settings, "TrayAutostart") is True
     assert state is False
+
+
+def test_is_autostart_launch_reads_argument():
+    assert autostart.is_autostart_launch(["--autostart"]) is True
+    assert autostart.is_autostart_launch([]) is False
+    assert autostart.is_autostart_launch(["--other"]) is False
+
+
+@pytest.mark.skipif(not _is_admin(), reason="写 HKLM 需要管理员权限")
+def test_register_machine_writes_autostart_argument(machine_key):
+    exe = Path(r"C:\Apps\NetAnchor.Tray.exe")
+
+    assert autostart.register_machine(exe, value_name="Test Tray", key_path=machine_key) is True
+    entry = autostart.machine_entry("Test Tray", machine_key)
+    # 带 --autostart，托盘才能区分"自启"与"手动双击"
+    assert entry == f'"{exe}" {autostart.AUTOSTART_ARG}'
+
+    autostart.unregister_machine("Test Tray", machine_key)
+    assert autostart.machine_entry("Test Tray", machine_key) is None

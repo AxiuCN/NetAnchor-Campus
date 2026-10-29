@@ -37,20 +37,39 @@ class LoginResult:
     message: str
 
 
+def normalize_host(host: str) -> str:
+    """把用户可能填成完整 URL 的 host 收敛成主机名。
+
+    配置里出现过 `http://192.168.115.8/`：再拼一次协议头就变成
+    `http://http://192.168.115.8/`，探测恒定失败，而日志里只剩"候选均不可达"，
+    看起来像断网。这里只规整**请求侧**，不改存储值——存储值参与凭据指纹，
+    改了会让已保存的密码失效。
+    """
+    value = (host or "").strip()
+    if "://" in value:
+        value = value.split("://", 1)[1]
+    value = value.split("/", 1)[0]
+    return value.strip()
+
+
 def _base(candidate: PortalCandidate) -> str:
+    host = normalize_host(candidate.host)
     if candidate.login_port == 80:
-        return f"http://{candidate.host}"
-    return f"http://{candidate.host}:{candidate.login_port}"
+        return f"http://{host}"
+    return f"http://{host}:{candidate.login_port}"
 
 
 def _eportal(candidate: PortalCandidate) -> str:
-    return f"http://{candidate.host}:{candidate.eportal_port}"
+    return f"http://{normalize_host(candidate.host)}:{candidate.eportal_port}"
 
 
 class PortalClient:
     def __init__(self, http: HttpClient, timeout: float = 5.0) -> None:
         self._http = http
         self._timeout = timeout
+        # 最近一轮"所有候选都失败"的具体原因，供上层写进状态与日志
+        self.last_probe_error = ""
+        self._logged_probe_error = ""
 
     def probe(self, candidate: PortalCandidate, timeout: float | None = None) -> bool:
         """探测候选门户是否可用：200 且 Server 头含 DrcomServer1.0。"""
@@ -63,14 +82,24 @@ class PortalClient:
     def pick_candidate(
         self, candidates: list[PortalCandidate], timeout: float | None = None
     ) -> PortalCandidate | None:
+        failures: list[str] = []
         for candidate in candidates:
             try:
                 if self.probe(candidate, timeout=timeout):
+                    self.last_probe_error = ""
+                    self._logged_probe_error = ""
                     return candidate
-            except ProtocolError:
-                continue
+            except ProtocolError as exc:
+                failures.append(f"{normalize_host(candidate.host)}: {exc}")
             except Exception as exc:  # 网络错误逐个跳过，交给上层判断
-                logger.debug("门户候选 %s 探测失败: %s", candidate.host, exc)
+                failures.append(
+                    f"{normalize_host(candidate.host)}: {type(exc).__name__}: {exc}"
+                )
+        self.last_probe_error = "；".join(failures)
+        # 只在原因变化时记一条：离线时每轮都刷同样的失败没有意义
+        if self.last_probe_error != self._logged_probe_error:
+            self._logged_probe_error = self.last_probe_error
+            logger.warning("门户候选均探测失败：%s", self.last_probe_error)
         return None
 
     def fetch_captcha(self, candidate: PortalCandidate) -> bytes:
