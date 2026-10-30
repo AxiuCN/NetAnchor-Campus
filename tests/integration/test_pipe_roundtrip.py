@@ -124,3 +124,40 @@ def test_server_survives_client_disconnect(tmp_path, pipe_name):
     finally:
         server.stop()
         server.join(timeout=3)
+
+
+def test_client_retries_when_pipe_drops_midwrite(tmp_path, pipe_name):
+    """服务端在断开与关闭句柄之间的窗口里会给出 233，客户端应重连重试而不是报错。"""
+    import threading
+
+    import pywintypes
+
+    store = make_store(tmp_path)
+    server = start_server(store, pipe_name)
+    real_write = win32file.WriteFile
+    counter = {"n": 0}
+    main_thread = threading.current_thread()
+
+    def flaky_write(handle, data):
+        # 只干扰客户端（主线程）的前两次写，服务端响应照常
+        if threading.current_thread() is main_thread and counter["n"] < 2:
+            counter["n"] += 1
+            raise pywintypes.error(233, "WriteFile", "管道的另一端上无任何进程。")
+        return real_write(handle, data)
+
+    try:
+        assert server.wait_ready(3.0) is True
+        client = PipeClient(pipe_name, timeout_ms=3000, allow_insecure=True)
+        import netanchor.ipc as ipc_module
+
+        original = ipc_module.win32file.WriteFile
+        ipc_module.win32file.WriteFile = flaky_write
+        try:
+            response = client.request("status")
+        finally:
+            ipc_module.win32file.WriteFile = original
+        assert response["ok"] is True
+        assert counter["n"] == 2, "应当重试了两次"
+    finally:
+        server.stop()
+        server.join(timeout=3)

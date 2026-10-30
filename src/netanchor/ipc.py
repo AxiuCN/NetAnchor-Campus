@@ -423,16 +423,27 @@ class PipeClient:
 
     def request(self, cmd: str, data: dict | None = None, request_id: str = "cli") -> dict:
         payload = encode_frame({"v": PROTOCOL_VERSION, "id": request_id, "cmd": cmd, "data": data or {}})
-        handle = self._connect()
-        try:
-            if not self._allow_insecure:
-                problem = check_server_identity(handle, self._expected_image)
-                if problem:
-                    raise IpcError(f"无法确认服务端身份（{problem}），已拒绝发送请求")
-            win32file.WriteFile(handle, payload)
-            _err, raw = win32file.ReadFile(handle, MAX_FRAME)
-        except pywintypes.error as exc:
-            raise IpcError(f"与服务通信失败: {exc.strerror or exc}") from exc
-        finally:
-            handle.Close()
-        return decode_frame(raw)
+        deadline = time.monotonic() + self._timeout_ms / 1000
+        attempts = 0
+        while True:
+            attempts += 1
+            handle = self._connect()
+            try:
+                if not self._allow_insecure:
+                    problem = check_server_identity(handle, self._expected_image)
+                    if problem:
+                        raise IpcError(f"无法确认服务端身份（{problem}），已拒绝发送请求")
+                win32file.WriteFile(handle, payload)
+                _err, raw = win32file.ReadFile(handle, MAX_FRAME)
+                return decode_frame(raw)
+            except pywintypes.error as exc:
+                # 233 ERROR_PIPE_NOT_CONNECTED / 109 ERROR_BROKEN_PIPE：服务端在
+                # DisconnectNamedPipe 与关闭句柄之间有个极短窗口，客户端正好接上去
+                # 就会拿到"另一端无进程"。这时请求还没被处理，重连一次即可。
+                if exc.winerror in (109, 233) and attempts < 3 and time.monotonic() < deadline:
+                    logger.debug("IPC 连接中途断开（winerror=%s），重试第 %d 次", exc.winerror, attempts)
+                    time.sleep(0.05)
+                    continue
+                raise IpcError(f"与服务通信失败: {exc.strerror or exc}") from exc
+            finally:
+                handle.Close()

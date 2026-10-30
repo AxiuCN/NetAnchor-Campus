@@ -19,8 +19,10 @@ from netanchor.ui import autostart
 def test_register_tray_autostart_is_noop_when_not_frozen(tmp_path):
     """从源码运行（开发、测试）时不能改机器级注册表。"""
     assert not getattr(cli.sys, "frozen", False)
+    before = autostart.machine_entry()
     _register_tray_autostart(tmp_path)
-    assert autostart.machine_entry() is None
+    # 本机可能已经装过（HKLM 里有真实注册项），关键是不能被测试改成临时路径
+    assert autostart.machine_entry() == before
 
 
 def test_copy_tree(tmp_path):
