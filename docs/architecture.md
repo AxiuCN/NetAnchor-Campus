@@ -777,6 +777,47 @@ http://http://192.168.115.8/   →   getaddrinfo failed
 ### 教训
 
 - 这个错被 §26 的 URL bug **挡了两周**：链路连登录都走不到，所以"学号错"一直没有机会显形。修 bug 要一层层剥，别指望一次就到底。
-- 诊断信息值得做：本次能定位，靠的是门户登录页里的 `uid` 与旧实现配置的交叉比对。若日志在 `userid error1` 时同时打印"提交的账号长度/后缀"，本可以更快。
+- 诊断信息值得做：本次能定位，靠的是门户登录页里的 `uid` 与旧实现配置的交叉比对。若日志在 `userid error1` 时同时打印"提交的账号后缀"，本可以更快。
+
+## 28. 托盘拖住注销与关机（0.2.7）
+
+### 现象
+
+Application 日志反复出现：
+
+```
+Id 10001  Microsoft-Windows-Winsrv：下列应用程序试图否决关机: NetAnchor.Tray.exe.
+```
+
+出现时间：10-29 13:39、21:44，10-30 00:57、12:00、12:08、12:10。同期没有 `1074`（已发起关机）/`6006`（正常关机）记录——说明关机被卡住，用户手动结束托盘后才继续。
+
+### 根因
+
+两处叠加，都不是"故意否决"：
+
+1. **pystray 不处理会话结束消息**。它的窗口过程只映射 `WM_DISPLAYCHANGE / WM_STOP / WM_NOTIFY / WM_TASKBARCREATED`（`pystray/_win32.py`），其余交给 `DefWindowProc`。进程不会在 `WM_ENDSESSION` 时主动退出，系统只能等超时强杀，并记一条"试图否决关机"。
+2. **消息泵会被 IPC 堵住**。菜单回调（立即重连 / 启动停止监控 / 打开日志目录）在 pystray 的消息循环线程里同步执行，内部 `PipeClient.request` 最长等 5 秒——这段时间消息泵是停的，`WM_QUERYENDSESSION` 也没人应答。
+
+### 修复
+
+- 新增 `watch_session_end()`：托盘自己建一个隐藏顶层窗口 `NetAnchorSessionEndWatcher`，`WM_QUERYENDSESSION` 回 TRUE 放行，`WM_ENDSESSION` 时停图标并让主线程的 `icon.run()` 返回。建窗口失败只记日志，不影响托盘其余功能。
+- 菜单动作改到后台线程（`TrayAction` / `TrayLogs`），消息循环不再被 IPC 阻塞。
+
+### 验证（0.2.7，模拟而非真实注销）
+
+真实注销会中断当前桌面，所以直接向托盘的隐藏窗口投递同样的消息：
+
+| 步骤 | 结果 |
+|---|---|
+| 枚举托盘进程的顶层窗口 | 找到 `NetAnchorSessionEndWatcher`（另有 pystray 的两个托盘窗口、两个 IME 窗口） |
+| `SendMessage(WM_QUERYENDSESSION)` | 返回 **1**（放行） |
+| `SendMessage(WM_ENDSESSION, wParam=1)` | 托盘进程 **0.03 秒**退出 |
+| 托盘日志 | `系统请求结束会话（允许）` → `会话即将结束，托盘退出` → `托盘已退出` |
+
+### 未做 / 残余
+
+- **真实关机**没在本会话验证（会中断桌面）。下次实际关机时看 Application 日志里是否还出现 10001 即可确认。
+- 托盘仍无崩溃自愈：结论是**不引入守护进程**（会与"不写包装器代替程序管理生命周期"冲突，且守护者本身也需要被守护）。若将来确需，用系统原生的 `RegisterApplicationRestart`，而不是自写守护。
+
 
 

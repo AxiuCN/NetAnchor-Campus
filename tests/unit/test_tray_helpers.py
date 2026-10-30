@@ -1,11 +1,36 @@
+import threading
+import time
 import uuid
 
 from netanchor.ui.tray import (
+    TrayApp,
     acquire_single_instance,
     color_for_state,
     release_single_instance,
     status_text,
 )
+
+
+class _SlowClient:
+    """每次调用都卡 2 秒，用来证明菜单回调不会阻塞消息循环。"""
+
+    def __init__(self) -> None:
+        self.called = threading.Event()
+
+    def request(self, cmd, data=None):
+        self.called.set()
+        time.sleep(2)
+        return {"ok": True, "data": {"result": "queued"}}
+
+
+def test_menu_action_does_not_block_message_loop():
+    client = _SlowClient()
+    app = TrayApp(client=client)
+    started = time.monotonic()
+    app._on_reconnect()
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.5, f"菜单回调应立即返回，实际阻塞 {elapsed:.2f}s"
+    assert client.called.wait(3), "后台线程最终应发出请求"
 
 
 def test_color_for_known_states():

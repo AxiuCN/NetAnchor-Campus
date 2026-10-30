@@ -11,7 +11,9 @@ from tkinter import messagebox, ttk
 
 import pystray
 import win32api
+import win32con
 import win32event
+import win32gui
 from PIL import Image, ImageDraw
 
 from .. import __version__
@@ -26,6 +28,8 @@ POLL_SECONDS = 5
 SINGLE_INSTANCE_NAME = "Local\\NetAnchorCampus.Tray"
 ERROR_ALREADY_EXISTS = 183
 LOG_DIR_NAME = "NetAnchor-Campus"
+# 自己建一个顶层窗口专门接收关机/注销消息（pystray 的窗口过程不处理这两条）
+SESSION_WINDOW_CLASS = "NetAnchorSessionEndWatcher"
 
 _instance_mutex = None
 
@@ -190,6 +194,13 @@ class TrayApp:
 
     # ---- 菜单动作 ----
     def _action(self, cmd: str, label: str) -> None:
+        # 菜单回调跑在 pystray 的消息循环线程里；在这里同步做 IPC 会把消息泵堵住，
+        # 关机/注销时正是这种"消息泵不转"会被系统判成未响应。统一丢到后台线程。
+        threading.Thread(
+            target=self._run_action, args=(cmd, label), daemon=True, name="TrayAction"
+        ).start()
+
+    def _run_action(self, cmd: str, label: str) -> None:
         data = self._safe_call(cmd)
         if data is None:
             logger.warning("菜单动作「%s」失败：%s", label, self._error)
@@ -222,6 +233,9 @@ class TrayApp:
         self._action("monitor.stop", "停止监控")
 
     def _on_logs(self, icon=None, item=None) -> None:
+        threading.Thread(target=self._open_logs, daemon=True, name="TrayLogs").start()
+
+    def _open_logs(self) -> None:
         data = self._safe_call("logs.path")
         if not data:
             logger.warning("打开日志目录失败：%s", self._error)
@@ -232,6 +246,11 @@ class TrayApp:
 
     def _on_quit(self, icon=None, item=None) -> None:
         logger.info("用户退出托盘")
+        self._stop.set()
+        self._icon.stop()
+
+    def _on_session_end(self) -> None:
+        """系统要结束会话：停图标、让主线程的 icon.run() 返回后正常退出。"""
         self._stop.set()
         self._icon.stop()
 
@@ -356,7 +375,53 @@ class TrayApp:
 
     def run(self) -> None:
         threading.Thread(target=self._poll_loop, daemon=True, name="TrayPoll").start()
+        watch_session_end(self._on_session_end)
         self._icon.run()
+
+
+def watch_session_end(on_end) -> None:
+    """建一个隐藏的顶层窗口，专门接收关机/注销消息。
+
+    pystray 的窗口过程只处理 DISPLAYCHANGE / STOP / NOTIFY / TASKBARCREATED，
+    不响应 WM_QUERYENDSESSION / WM_ENDSESSION；进程不会在会话结束时主动退出，
+    系统只能等超时再强杀，Application 日志里就留下"试图否决关机"。
+    这里自己建窗口：查询阶段回 TRUE 放行，结束阶段立刻停图标退出。
+    """
+
+    def _loop() -> None:
+        def handler(hwnd, msg, wparam, lparam):
+            if msg == win32con.WM_QUERYENDSESSION:
+                logger.info("系统请求结束会话（允许）")
+                return 1
+            if msg == win32con.WM_ENDSESSION:
+                if wparam:
+                    logger.info("会话即将结束，托盘退出")
+                    try:
+                        on_end()
+                    except Exception:  # noqa: BLE001
+                        logger.exception("会话结束时清理失败")
+                win32gui.PostQuitMessage(0)
+                return 0
+            if msg == win32con.WM_DESTROY:
+                win32gui.PostQuitMessage(0)
+                return 0
+            return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
+
+        try:
+            wc = win32gui.WNDCLASS()
+            wc.lpszClassName = SESSION_WINDOW_CLASS
+            wc.hInstance = win32api.GetModuleHandle(None)
+            wc.lpfnWndProc = handler
+            class_atom = win32gui.RegisterClass(wc)
+            win32gui.CreateWindow(
+                class_atom, SESSION_WINDOW_CLASS, 0, 0, 0, 0, 0, 0, 0, wc.hInstance, None
+            )
+            win32gui.PumpMessages()
+        except Exception:  # noqa: BLE001
+            # 监视器起不来只是回归到旧行为，不该拦住托盘
+            logger.exception("会话结束监视器启动失败（关机时可能被系统超时强杀）")
+
+    threading.Thread(target=_loop, daemon=True, name="TraySessionEnd").start()
 
 
 def tray_log_dir() -> Path:
