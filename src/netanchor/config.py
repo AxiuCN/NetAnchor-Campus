@@ -74,7 +74,7 @@ class MonitorSettings:
 
 @dataclass
 class OcrSettings:
-    mode: str = "subprocess"  # subprocess（默认，见 docs/architecture.md §10）| inprocess
+    mode: str = "subprocess"  # subprocess（默认，见 docs/模块-服务.md）| inprocess
     idle_exit_seconds: int = 60
 
 

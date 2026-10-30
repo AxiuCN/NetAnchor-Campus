@@ -28,7 +28,7 @@
 ```powershell
 .\NetAnchor.Cli.exe install
 # 或安装到其它目录
-.\NetAnchor.Cli.exe install --dir 'D:\Program Files\NetAnchor-Campus'
+.\NetAnchor.Cli.exe install --dir 'C:\Apps\NetAnchor-Campus'
 ```
 
 > 目前没有双击安装器；`install` 需要从管理员终端发起。安装包（setup.exe）尚未实现。

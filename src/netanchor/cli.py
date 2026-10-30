@@ -1,7 +1,7 @@
 """命令行：安装 / 升级 / 卸载 / 状态。均需要管理员权限。
 
 安装与升级都要求"打包后的目录"——服务进程必须是 exe，
-不能用 `python xxx.py install`（见 docs/architecture.md §14 R2）。
+不能用 `python xxx.py install`（见 docs/待办.md 的 R2）。
 """
 from __future__ import annotations
 

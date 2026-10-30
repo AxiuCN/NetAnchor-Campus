@@ -25,3 +25,6 @@ Thumbs.db
 
 # DeepSeek Harness 工作区
 .dsh/
+
+# 本机信息（路径、部署环境），不入库
+docs/private/
