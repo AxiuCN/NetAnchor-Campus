@@ -83,12 +83,65 @@ def status_text(status: dict) -> str:
     return f"状态：{label}"
 
 
-def make_icon(color: str, size: int = 64) -> Image.Image:
-    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    margin = 4
-    draw.ellipse([margin, margin, size - margin, size - margin], fill=color, outline="white", width=2)
-    return image
+ASSET_NAME = "app.png"
+_asset_cache: dict[str, Image.Image] = {}
+
+
+def asset_path(name: str = ASSET_NAME) -> Path:
+    """素材路径：打包后从 `_internal` 取，开发态从源码旁的 assets/ 取。"""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass) / "netanchor" / "ui" / "assets" / name
+    return Path(__file__).resolve().parent / "assets" / name
+
+
+def _base_icon() -> Image.Image | None:
+    """载入素材并裁到内容边界。
+
+    母版为 exe 图标留了 6% 边距，但托盘里图标只有 16–20px，这点边距会让它
+    明显比旁边满幅的应用小一圈，所以托盘单独裁紧。
+    """
+    if "base" not in _asset_cache:
+        try:
+            image = Image.open(asset_path()).convert("RGBA")
+            bbox = image.getchannel("A").getbbox()
+            _asset_cache["base"] = image.crop(bbox) if bbox else image
+        except OSError as exc:
+            logger.warning("加载图标素材失败，退回纯色图标：%s", exc)
+            _asset_cache["base"] = None
+    return _asset_cache["base"]
+
+
+def make_icon(color: str, size: int = 256) -> Image.Image:
+    """应用图标（铺满）+ 右上角状态角标。素材缺失时退回纯色圆点，托盘不能因为图标挂掉。"""
+    base = _base_icon()
+    if base is None:
+        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        margin = max(2, size // 16)
+        draw.ellipse(
+            [margin, margin, size - margin, size - margin],
+            fill=color, outline="white", width=max(1, size // 32),
+        )
+        return image
+
+    # 保持比例铺满：内容 bbox 不是正方形，直接 resize 会压扁
+    scale = min(size / base.width, size / base.height)
+    art_size = (max(1, round(base.width * scale)), max(1, round(base.height * scale)))
+    art = base.resize(art_size, Image.LANCZOS)
+    icon = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    icon.paste(art, ((size - art_size[0]) // 2, (size - art_size[1]) // 2), art)
+
+    # 角标放在画面外沿：不影响图形本身的视觉大小，20px 下也有 3–4px
+    radius = max(2, int(size * 0.16))
+    gap = max(1, size // 64)
+    cx = size - radius - gap
+    cy = radius + gap
+    ImageDraw.Draw(icon).ellipse(
+        [cx - radius, cy - radius, cx + radius, cy + radius],
+        fill=color, outline=(255, 255, 255, 255), width=max(1, size // 64),
+    )
+    return icon
 
 
 class TrayApp:

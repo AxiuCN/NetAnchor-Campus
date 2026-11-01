@@ -117,3 +117,7 @@ pyinstaller build/netanchor.spec      # 打包到 dist/NetAnchor-Campus
 ## 许可
 
 GPL-3.0，见 `LICENSE`。
+
+## 图标与第三方内容
+
+`src/netanchor/ui/assets/` 下的应用图标是《原神》角色（胡桃）的同人二创，由 AI 图像生成工具产出，仅用于本项目标识。角色形象版权归米哈游所有，本项目与之无从属或授权关系。图标不在 GPL-3.0 的授权范围内，请勿单独提取使用。

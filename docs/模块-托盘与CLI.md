@@ -15,6 +15,7 @@
 | 菜单动作 | 立即重连 / 启动监控 / 停止监控 / 打开日志目录 / 设置… / 开机自启开关 / 退出托盘；**动作在后台线程执行**，不阻塞消息循环 |
 | 设置窗口 | 独立的 tkinter 线程；保存走 `config.set`，改门户地址时必须同交密码（否则 `reauth_required`） |
 | 日志 | `%LOCALAPPDATA%\NetAnchor-Campus\logs\tray.log` |
+| 图标 | 运行时加载 `app.png`（打包在 `_internal/netanchor/ui/assets/`，用 `sys._MEIPASS` 定位）；托盘侧裁到内容边界并按比例铺满（母版的 6% 留白只属于 exe 图标），状态用**右上角角标颜色**表达；素材缺失时退回纯色圆点，不影响启动 |
 | 退出 | 退出托盘不影响服务；服务重建管道时托盘可能短暂显示"服务未连接"（有重试） |
 
 **会话结束**：pystray 的窗口过程不处理 `WM_QUERYENDSESSION` / `WM_ENDSESSION`，所以托盘自己建了一个隐藏顶层窗口 `NetAnchorSessionEndWatcher`：查询阶段回 TRUE 放行，结束阶段停图标退出。没有它，系统会等到超时强杀并记一条"试图否决关机"（见 [历史与根因 · 托盘拖住关机](历史与根因.md)）。

@@ -7,6 +7,10 @@ from PyInstaller.utils.hooks import collect_all
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 SRC = os.path.join(ROOT, "src")
 ENTRY = os.path.join(ROOT, "build")
+# 应用图标：app.ico 写进 exe 资源，app.png 供托盘运行时加载
+ASSETS = os.path.join(SRC, "netanchor", "ui", "assets")
+APP_ICON = os.path.join(ASSETS, "app.ico")
+TRAY_ASSETS = [(os.path.join(ASSETS, "app.png"), os.path.join("netanchor", "ui", "assets"))]
 
 PYWIN_HIDDEN = [
     "win32timezone",
@@ -42,7 +46,7 @@ def make_analysis(script, datas=None, binaries=None, hidden=None):
 
 
 a_service = make_analysis(os.path.join(ENTRY, "entry_service.py"))
-a_tray = make_analysis(os.path.join(ENTRY, "entry_tray.py"))
+a_tray = make_analysis(os.path.join(ENTRY, "entry_tray.py"), datas=TRAY_ASSETS)
 a_ocr = make_analysis(
     os.path.join(ENTRY, "entry_ocr.py"),
     datas=ocr_datas,
@@ -77,21 +81,25 @@ pyz_cli = PYZ(a_cli.pure)
 exe_service = EXE(
     pyz_service, a_service.scripts, [],
     exclude_binaries=True, name="NetAnchor.Service",
+    icon=APP_ICON,
     console=True, disable_windowed_traceback=False,
 )
 exe_tray = EXE(
     pyz_tray, a_tray.scripts, [],
     exclude_binaries=True, name="NetAnchor.Tray",
+    icon=APP_ICON,
     console=False, disable_windowed_traceback=False,
 )
 exe_ocr = EXE(
     pyz_ocr, a_ocr.scripts, [],
     exclude_binaries=True, name="NetAnchor.Ocr",
+    icon=APP_ICON,
     console=True, disable_windowed_traceback=False,
 )
 exe_cli = EXE(
     pyz_cli, a_cli.scripts, [],
     exclude_binaries=True, name="NetAnchor.Cli",
+    icon=APP_ICON,
     console=True, disable_windowed_traceback=False,
 )
 
