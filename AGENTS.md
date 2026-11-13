@@ -17,7 +17,7 @@
 | `NetAnchor.Service.exe` | LocalSystem / Session 0 | SCM，`AUTO_START` | 配置与凭据、监控状态机、IPC 服务端、按需拉起 OCR |
 | `NetAnchor.Tray.exe` | 交互用户 / 各自会话 | 登录时由 `HKLM\...\Run` 拉起（带 `--autostart`） | 只做 UI：状态、设置、手动重连、打开日志 |
 | `NetAnchor.Ocr.exe` | LocalSystem / Session 0 | 服务按需拉起 | 识别一张验证码后退出 |
-| `NetAnchor.Cli.exe` | 管理员终端 | 手动 | `install` / `upgrade` / `uninstall` / `status` / `--version` |
+| `NetAnchor.Cli.exe` | 管理员终端 | 手动 | `install` / `upgrade` / `uninstall` / `status` / `--version`；安装包另用 `prepare` / `register` / `unregister` |
 
 关键路径：配置与凭据 `%ProgramData%\NetAnchor-Campus\`；服务日志 `...\logs\service.log`；托盘日志 `%LOCALAPPDATA%\NetAnchor-Campus\logs\tray.log`；IPC 管道 `\\.\pipe\NetAnchor.Campus.v1`。
 
@@ -32,6 +32,7 @@
 | 托盘与 CLI：单实例、轮询、菜单、会话结束、子命令 | [`docs/模块-托盘与CLI.md`](docs/模块-托盘与CLI.md) |
 | 测试分层、门禁、故障注入矩阵、内存测量 | [`docs/测试.md`](docs/测试.md) |
 | 各阶段实测、安全模型修订、六起事故复盘 | [`docs/历史与根因.md`](docs/历史与根因.md) |
+| 安装包构建、安装/升级/卸载流程、验收清单 | [`docs/安装包.md`](docs/安装包.md) |
 | 已知风险、未完成项（P7）、明确不做的事 | [`docs/待办.md`](docs/待办.md) |
 | 本机路径、宿主机部署现状（**不入库**） | `docs/private/`（新克隆上不存在） |
 | 面向使用者 | [`README.md`](README.md) |
@@ -100,4 +101,4 @@
 
 ## 待办摘要
 
-P6 真机验收已于 2026-10-30 通过（闭环保留见 [`docs/历史与根因.md`](docs/历史与根因.md)）；P7 安装包仍只有候选方案，未开始。已知缺口：监控线程无看门狗、托盘崩溃不自愈（已决定不引入守护进程）、TUN 类代理未验证。明细与"明确不做"清单见 [`docs/待办.md`](docs/待办.md)。
+P6 真机验收已于 2026-10-30 通过（闭环保留见 [`docs/历史与根因.md`](docs/历史与根因.md)）；P7 安装包已实现（Inno Setup 6），待干净机器验收。已知缺口：监控线程无看门狗、托盘崩溃不自愈（已决定不引入守护进程）、TUN 类代理未验证。明细与"明确不做"清单见 [`docs/待办.md`](docs/待办.md)。
