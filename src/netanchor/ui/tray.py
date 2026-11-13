@@ -197,7 +197,10 @@ class TrayApp:
         state = str(self._status.get("state", "stopped")) if self._connected else "stopped"
         title = status_text(self._status) if self._connected else "服务未连接"
         color = color_for_state(state) if self._connected else "#95a5a6"
-        if color != self._color:
+        # pystray 的 visible setter 是「先 _update_icon 再 _show，最后才置 _visible」：
+        # 图标还没挂进托盘时赋值会被静默丢弃，而 _icon_valid 已置 True，此后不再重试，
+        # 角标就永久停在初始灰。所以只在图标确实可见时才落色，不可见留给下一轮。
+        if color != self._color and self._icon.visible:
             self._color = color
             self._icon.icon = self._icon_for(color)
             # 图标是否真的换掉，从日志就能判断，不必靠肉眼盯托盘
@@ -428,10 +431,19 @@ class TrayApp:
                 logger.exception("刷新托盘状态时出现未预期异常，继续轮询")
             self._stop.wait(POLL_SECONDS)
 
+    def _setup(self, icon) -> None:
+        """图标真正挂进托盘之后再刷一次：首屏就是当前状态色，不必等下一轮轮询。"""
+        icon.visible = True
+        try:
+            self.refresh()
+        except Exception:  # noqa: BLE001
+            logger.exception("首轮刷新失败，继续轮询")
+
     def run(self) -> None:
         threading.Thread(target=self._poll_loop, daemon=True, name="TrayPoll").start()
         watch_session_end(self._on_session_end)
-        self._icon.run()
+        # 自带 setup：pystray 在图标可见前丢掉的更新，由这一轮补回来
+        self._icon.run(setup=self._setup)
 
 
 def watch_session_end(on_end) -> None:

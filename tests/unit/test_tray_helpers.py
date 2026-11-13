@@ -68,3 +68,37 @@ def test_single_instance_mutex():
         assert acquire_single_instance(name) is False
     finally:
         release_single_instance()
+
+class _StatusClient:
+    """只回答 status 的最小 IPC 客户端。"""
+
+    def __init__(self, state: str) -> None:
+        self._state = state
+
+    def request(self, cmd, data=None):
+        return {"ok": True, "data": {"state": self._state, "last_error": ""}}
+
+
+class _FakeIcon:
+    """替身图标：只需要 visible / icon / title / menu 四个属性。"""
+
+    def __init__(self) -> None:
+        self.visible = False
+        self.icon = "initial"
+        self.title = ""
+        self.menu = None
+
+
+def test_refresh_keeps_color_until_icon_is_visible():
+    """图标还没挂进托盘时赋值会被 pystray 丢弃，之后不再重试——必须先跳过。"""
+    app = TrayApp(client=_StatusClient("online"))
+    fake = _FakeIcon()
+    app._icon = fake
+
+    app.refresh()
+    assert fake.icon == "initial", "图标不可见时不应改写图标"
+    assert app._color == "#95a5a6", "未落色就不该把 _color 记成新颜色"
+
+    fake.visible = True
+    app.refresh()
+    assert app._color == "#2ecc71", "图标可见后应补上状态色"
