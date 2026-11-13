@@ -1,3 +1,10 @@
+# 0.4.0
+
+- 最低 Python 版本提升到 3.12（3.10 已于 2026-10-01 结束支持）：`pyproject.toml` 补 `build-system` 与 setuptools 的 src 布局配置，依赖补上 `pywin32` / `pystray` / `Pillow`，图标资源随 wheel 一起分发
+- 新增安装器专用子命令：`prepare`（升级前停服务并请托盘与 OCR 退出）、`register`（只登记服务与自启，不复制文件）、`unregister`（拆服务与自启，不删文件）；`install` 与 `register` 共用同一段登记实现
+- 托盘新增 `NetAnchor-Tray-Quit` 注册消息退出路径，供安装器请求退出；`WM_CLOSE` 实测不可用（pystray 不处理，走 `DefWindowProc` 只销毁窗口、进程留着）
+- 升级/卸载前的进程清理改为只结束**镜像路径落在安装目录内**的托盘与 OCR，不再按 exe 名字全局 `taskkill`；优先请求它们自己退出，超时才终止
+
 # 0.3.1
 
 - 修复从安装目录运行 `upgrade` 时父 CLI 锁住自身影像：子进程删不掉旧目录、回滚也复制不回去，会把安装目录留在残缺状态。改为在停止服务前直接拒绝，并给出可直接复制的发布包命令

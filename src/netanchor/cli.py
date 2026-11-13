@@ -6,13 +6,22 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import os
 import shutil
 import subprocess
 import sys
 import time
 import winreg
+from ctypes import wintypes
 from pathlib import Path
+from typing import Sequence
 
+import pywintypes
+import win32api
+import win32con
+import win32gui
+import win32process
 import win32service
 import win32serviceutil
 
@@ -21,6 +30,10 @@ from .service_main import SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME, SERVICE_NAM
 
 SERVICE_EXE_NAME = "NetAnchor.Service.exe"
 TRAY_EXE_NAME = "NetAnchor.Tray.exe"
+OCR_EXE_NAME = "NetAnchor.Ocr.exe"
+# 托盘的会话监视窗口：安装器通过它请托盘走自己的退出路径
+SESSION_WINDOW_CLASS = "NetAnchorSessionEndWatcher"
+TRAY_QUIT_MESSAGE = "NetAnchor-Tray-Quit"
 # 仅作为"未指定 --dir 时"的默认值；实际安装位置以服务注册的 ImagePath 为准
 DEFAULT_INSTALL_DIR = Path(r"C:\Program Files\NetAnchor-Campus")
 APP_REG_KEY = r"SOFTWARE\NetAnchor-Campus"
@@ -162,11 +175,114 @@ def _remove_tree(path: Path, attempts: int = 12) -> None:
     raise CliError(f"删除失败，文件仍被占用: {path}")
 
 
-def _close_running_clients() -> None:
-    """升级前结束托盘与 OCR 工作进程——它们会占用被替换的 exe。"""
-    for image in ("NetAnchor.Tray.exe", "NetAnchor.Ocr.exe"):
-        subprocess.run(["taskkill", "/f", "/im", image], capture_output=True)
-    time.sleep(1)
+def _process_image(pid: int) -> Path | None:
+    """取进程镜像路径。无权限（SYSTEM 进程）或进程已退出时返回 None。"""
+    try:
+        handle = win32api.OpenProcess(win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    except pywintypes.error:
+        return None
+    try:
+        buffer = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(buffer))
+        ok = ctypes.windll.kernel32.QueryFullProcessImageNameW(
+            int(handle), 0, buffer, ctypes.byref(size)
+        )
+        return Path(buffer.value) if ok else None
+    except OSError:
+        return None
+    finally:
+        handle.Close()
+
+
+def _running_under(
+    install_dir: Path,
+    names: Sequence[str],
+    skip: set[int],
+    image_of=_process_image,
+) -> dict[int, Path]:
+    """安装目录下、文件名匹配的进程。
+
+    只认镜像路径：别处同名的 exe（哪怕用户自己编译的）一律不碰。
+    """
+    wanted = {(install_dir / name).resolve() for name in names}
+    found: dict[int, Path] = {}
+    try:
+        pids = win32process.EnumProcesses()
+    except pywintypes.error:
+        return found
+    for pid in pids:
+        if pid <= 0 or pid in skip:
+            continue
+        image = image_of(pid)
+        if image is None:
+            continue
+        try:
+            resolved = image.resolve()
+        except OSError:
+            continue
+        if resolved in wanted:
+            found[pid] = resolved
+    return found
+
+
+def _request_tray_exit(timeout: float = 5.0) -> None:
+    """请托盘自己退出，而不是直接终止。
+
+    先发注册消息 ``NetAnchor-Tray-Quit``；0.3.1 及更早的托盘不认识它，
+    退回 ``WM_ENDSESSION``（等同于模拟注销，那条路径它们已经在用）。
+    两种消息都只是"请求"，最终是否退出由调用方复查进程决定。
+    """
+    window = win32gui.FindWindow(SESSION_WINDOW_CLASS, None)
+    if not window:
+        return
+    quit_message = win32gui.RegisterWindowMessage(TRAY_QUIT_MESSAGE)
+    attempts = [(quit_message, 0), (win32con.WM_ENDSESSION, 1)]
+    for message, wparam in attempts:
+        if not message:
+            continue
+        try:
+            win32gui.SendMessageTimeout(
+                window, message, wparam, 0,
+                win32con.SMTO_ABORTIFHUNG, int(timeout * 1000),
+            )
+        except pywintypes.error:
+            continue
+        return
+
+
+def _close_running_clients(install_dir: Path | None = None, timeout: float = 5.0) -> None:
+    """结束安装目录内的托盘与 OCR 进程——它们会占用被替换的 exe。
+
+    顺序：先请它们正常退出（托盘走自己的退出路径），超时后只对残留下手，
+    且只终止镜像路径落在安装目录里的进程。
+    """
+    target = (install_dir or installed_dir()).resolve()
+    skip = {os.getpid(), os.getppid()}
+    names = (TRAY_EXE_NAME, OCR_EXE_NAME)
+
+    _request_tray_exit(timeout)
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _running_under(target, names, skip):
+            return
+        time.sleep(0.2)
+
+    for pid in _running_under(target, names, skip):
+        try:
+            handle = win32api.OpenProcess(win32con.PROCESS_TERMINATE, False, pid)
+        except pywintypes.error:
+            continue
+        try:
+            win32api.TerminateProcess(handle, 1)
+        finally:
+            handle.Close()
+    time.sleep(0.5)
+
+    left = _running_under(target, names, skip)
+    if left:
+        detail = ", ".join(f"{pid}={path}" for pid, path in left.items())
+        raise CliError(f"仍有进程占用安装目录: {detail}")
 
 
 def _copy_file(source: Path, target: Path, attempts: int = 40) -> None:
@@ -219,6 +335,34 @@ def _create_service(exe_path: Path) -> None:
         except Exception:  # noqa: BLE001
             pass
         win32service.CloseServiceHandle(service)
+    finally:
+        win32service.CloseServiceHandle(scm)
+
+
+def _ensure_service(exe_path: Path) -> None:
+    """服务不存在就建，已存在就改指向——安装与升级共用。"""
+    if query_state() is None:
+        _create_service(exe_path)
+        return
+    scm = _scm_manager(win32service.SC_MANAGER_ALL_ACCESS)
+    try:
+        service = win32service.OpenService(scm, SERVICE_NAME, win32service.SERVICE_ALL_ACCESS)
+        try:
+            win32service.ChangeServiceConfig(
+                service,
+                win32service.SERVICE_NO_CHANGE,
+                win32service.SERVICE_AUTO_START,
+                win32service.SERVICE_NO_CHANGE,
+                f'"{exe_path}"',
+                None,
+                0,
+                None,
+                None,
+                None,
+                SERVICE_DISPLAY_NAME,
+            )
+        finally:
+            win32service.CloseServiceHandle(service)
     finally:
         win32service.CloseServiceHandle(scm)
 
@@ -311,6 +455,40 @@ def _unregister_tray_autostart() -> None:
     print("已移除托盘自启注册项")
 
 
+def _clear_tray_autostart() -> None:
+    """删掉机器级与当前用户级自启项；删不干净就报错，安装器据此判定失败。"""
+    from .ui.autostart import machine_entry, register_machine, unregister, unregister_machine
+
+    if not getattr(sys, "frozen", False):
+        print("托盘自启: 跳过（非打包运行）")
+        return
+    unregister_machine()
+    unregister()
+    if machine_entry() is not None:
+        raise CliError("托盘自启项未能清除（HKLM 拒绝写入，需管理员权限）")
+    print("已移除托盘自启注册项")
+
+
+def _register_install(target: Path, start: bool, autostart: bool) -> None:
+    """把"一个目录已经就位"变成"服务可用"：服务、恢复动作、配置模板、自启、启动。
+
+    install 与安装器的 register 共用这一段，服务生命周期只有一份实现。
+    """
+    _ensure_service(target / SERVICE_EXE_NAME)
+    _set_failure_actions()
+    store = ConfigStore()
+    path = store.init_template()
+    print(f"配置模板: {path}")
+    _remember_install_dir(target)
+    if autostart:
+        _register_tray_autostart(target)
+    else:
+        _clear_tray_autostart()
+    print(f"服务已登记: {SERVICE_NAME}（安装目录 {target}）")
+    if start:
+        _start(silent=True)
+
+
 def install(source: Path | None = None, start: bool = True, target_dir: Path | None = None) -> int:
     if query_state() is not None:
         print("服务已存在，请使用 upgrade", file=sys.stderr)
@@ -331,17 +509,7 @@ def install(source: Path | None = None, start: bool = True, target_dir: Path | N
 
     print(f"复制文件: {src} -> {target}")
     _copy_tree(src, target)
-    store = ConfigStore()
-    path = store.init_template()
-    print(f"配置模板: {path}")
-
-    _create_service(target / SERVICE_EXE_NAME)
-    _set_failure_actions()
-    _remember_install_dir(target)
-    _register_tray_autostart(target)
-    print(f"服务已创建: {SERVICE_NAME}（安装目录 {target}）")
-    if start:
-        _start()
+    _register_install(target, start=start, autostart=True)
     return 0
 
 
@@ -458,21 +626,72 @@ def uninstall(purge: bool = False) -> int:
         _forget_install_dir()
         print("服务已删除")
 
+    return 0 if _finish_config(purge) else 1
+
+
+def _finish_config(purge: bool) -> bool:
+    """收尾：按需删除配置与日志。返回是否成功。"""
     store = ConfigStore()
-    if purge:
-        try:
-            _remove_tree(store.base_dir)
-        except CliError as exc:
-            print(f"配置目录清理失败: {exc}", file=sys.stderr)
-            print(f"仍存在: {store.base_dir}", file=sys.stderr)
-            return 1
-        if store.base_dir.exists():
-            print(f"配置目录仍存在，未完全删除: {store.base_dir}", file=sys.stderr)
-            return 1
-        print(f"已删除配置与日志: {store.base_dir}")
-    else:
+    if not purge:
         print(f"配置与日志保留在: {store.base_dir}（如需删除加 --purge）")
+        return True
+    try:
+        _remove_tree(store.base_dir)
+    except CliError as exc:
+        print(f"配置目录清理失败: {exc}", file=sys.stderr)
+        print(f"仍存在: {store.base_dir}", file=sys.stderr)
+        return False
+    if store.base_dir.exists():
+        print(f"配置目录仍存在，未完全删除: {store.base_dir}", file=sys.stderr)
+        return False
+    print(f"已删除配置与日志: {store.base_dir}")
+    return True
+
+
+# ---------------- 安装器专用命令 ----------------
+
+def prepare(install_dir: Path | None = None) -> int:
+    """升级前清场：停服务、请托盘与 OCR 退出。不做任何文件操作。
+
+    失败即返回非零，调用方必须据此中止，不能继续替换文件。
+    """
+    target = (Path(install_dir) if install_dir else installed_dir()).resolve()
+    print(f"安装目录: {target}")
+    print("停止服务")
+    _stop()
+    print("结束托盘与 OCR 进程")
+    _close_running_clients(target)
+    print("已清场")
     return 0
+
+
+def register(target_dir: Path, start: bool = True, autostart: bool = True) -> int:
+    """只登记、不复制：文件由安装器铺好，服务与自启由此处建立或修正。"""
+    target = Path(target_dir).resolve()
+    if not (target / SERVICE_EXE_NAME).exists():
+        print(f"未找到 {target / SERVICE_EXE_NAME}", file=sys.stderr)
+        return 1
+    print(f"安装目录: {target}")
+    _register_install(target, start=start, autostart=autostart)
+    print("登记完成")
+    return 0
+
+
+def unregister(purge: bool = False) -> int:
+    """拆除服务与登记，但不动安装目录里的文件（文件归安装器删）。"""
+    target = installed_dir()
+    state = query_state()
+    if state is not None:
+        print("停止服务")
+        _stop()
+    print("结束托盘与 OCR 进程")
+    _close_running_clients(target)
+    _unregister_tray_autostart()
+    if state is not None:
+        _delete_service()
+        _forget_install_dir()
+        print("服务已删除")
+    return 0 if _finish_config(purge) else 1
 
 
 def status() -> int:
@@ -509,6 +728,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_uninstall = sub.add_parser("uninstall", help="卸载服务")
     p_uninstall.add_argument("--purge", action="store_true", help="同时删除配置与日志")
 
+    p_prepare = sub.add_parser(
+        "prepare", help="安装器用：停止服务并结束托盘/OCR（升级前清场）"
+    )
+    p_prepare.add_argument("--install-dir", type=Path, default=None, dest="install_dir",
+                           help="安装目录（默认跟随服务注册路径）")
+
+    p_register = sub.add_parser(
+        "register", help="安装器用：只登记服务与自启，不复制文件"
+    )
+    p_register.add_argument("--dir", type=Path, required=True, dest="target_dir",
+                            help="已被安装器铺好文件的安装目录")
+    p_register.add_argument("--no-start", action="store_true", help="登记后不启动服务")
+    p_register.add_argument("--no-autostart", action="store_true",
+                            help="清掉托盘自启项（不写入）")
+
+    p_unregister = sub.add_parser(
+        "unregister", help="安装器用：拆除服务与自启，不删除文件"
+    )
+    p_unregister.add_argument("--purge", action="store_true", help="同时删除配置与日志")
+
     sub.add_parser("status", help="查看安装状态")
     return parser
 
@@ -522,6 +761,14 @@ def main(argv: list[str] | None = None) -> int:
             return upgrade(args.source)
         if args.command == "uninstall":
             return uninstall(purge=args.purge)
+        if args.command == "prepare":
+            return prepare(args.install_dir)
+        if args.command == "register":
+            return register(
+                args.target_dir, start=not args.no_start, autostart=not args.no_autostart
+            )
+        if args.command == "unregister":
+            return unregister(purge=args.purge)
         return status()
     except CliError as exc:
         print(f"错误: {exc}", file=sys.stderr)

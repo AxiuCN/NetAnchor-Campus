@@ -30,6 +30,8 @@ ERROR_ALREADY_EXISTS = 183
 LOG_DIR_NAME = "NetAnchor-Campus"
 # 自己建一个顶层窗口专门接收关机/注销消息（pystray 的窗口过程不处理这两条）
 SESSION_WINDOW_CLASS = "NetAnchorSessionEndWatcher"
+# 安装器（NetAnchor.Cli prepare）请托盘退出的注册消息，跨进程同名同值
+TRAY_QUIT_MESSAGE = "NetAnchor-Tray-Quit"
 
 _instance_mutex = None
 
@@ -456,7 +458,18 @@ def watch_session_end(on_end) -> None:
     """
 
     def _loop() -> None:
+        quit_message = win32gui.RegisterWindowMessage(TRAY_QUIT_MESSAGE)
+
         def handler(hwnd, msg, wparam, lparam):
+            if msg == quit_message:
+                # 安装/升级前由 CLI 投递；走和"用户退出"相同的清理路径
+                logger.info("安装程序请求退出托盘")
+                try:
+                    on_end()
+                except Exception:  # noqa: BLE001
+                    logger.exception("退出前清理失败")
+                win32gui.PostQuitMessage(0)
+                return 0
             if msg == win32con.WM_QUERYENDSESSION:
                 logger.info("系统请求结束会话（允许）")
                 return 1
