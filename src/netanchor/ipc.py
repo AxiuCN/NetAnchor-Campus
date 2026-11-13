@@ -239,7 +239,7 @@ class PipeServer(threading.Thread):
         try:  # 连接一次自身，解除 ConnectNamedPipe 的阻塞
             win32file.CreateFile(
                 self._pipe_name,
-                win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+                PIPE_ACCESS_CLIENT,
                 0, None, win32file.OPEN_EXISTING, 0, None,
             ).Close()
         except pywintypes.error:

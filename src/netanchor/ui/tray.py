@@ -132,14 +132,14 @@ def make_icon(color: str, size: int = 256) -> Image.Image:
     icon = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     icon.paste(art, ((size - art_size[0]) // 2, (size - art_size[1]) // 2), art)
 
-    # 角标放在画面外沿：不影响图形本身的视觉大小，20px 下也有 3–4px
-    radius = max(2, int(size * 0.16))
+    # 角标放右下角：那里是浅色脸部，20px 下也有足够对比；放右上角会被深色帽檐吃掉
+    radius = max(2, int(size * 0.20))
     gap = max(1, size // 64)
     cx = size - radius - gap
-    cy = radius + gap
+    cy = size - radius - gap
     ImageDraw.Draw(icon).ellipse(
         [cx - radius, cy - radius, cx + radius, cy + radius],
-        fill=color, outline=(255, 255, 255, 255), width=max(1, size // 64),
+        fill=color, outline=(255, 255, 255, 255), width=max(1, size // 48),
     )
     return icon
 
@@ -200,6 +200,8 @@ class TrayApp:
         if color != self._color:
             self._color = color
             self._icon.icon = self._icon_for(color)
+            # 图标是否真的换掉，从日志就能判断，不必靠肉眼盯托盘
+            logger.info("托盘图标状态色 -> %s（%s）", color, state)
         self._icon.title = f"NetAnchor-Campus - {title}"
 
         # 赋值 icon.menu 会触发 pystray 的内部 update_menu（销毁并重建原生菜单句柄）。

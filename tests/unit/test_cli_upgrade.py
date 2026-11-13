@@ -85,8 +85,8 @@ def test_failure_keeps_stopped_state_when_service_was_stopped(tmp_path, monkeypa
     assert calls["started"] == 0, "升级前服务是停止的，失败后不应擅自启动"
 
 
-def test_upgrade_from_install_dir_reexecs_package_cli(tmp_path, monkeypatch):
-    """从安装目录内运行 upgrade 会锁住自身，应改由发布包里的 CLI 继续。"""
+def test_upgrade_from_install_dir_rejects_before_changing_service(tmp_path, monkeypatch):
+    """父 CLI 持有自身影像时，停止服务前提示调用者运行发布包 CLI。"""
     src = tmp_path / "pkg"
     src.mkdir()
     (src / cli.SERVICE_EXE_NAME).write_text("new", encoding="utf-8")
@@ -100,21 +100,14 @@ def test_upgrade_from_install_dir_reexecs_package_cli(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
     monkeypatch.setattr(cli.sys, "executable", str(install / "NetAnchor.Cli.exe"))
 
-    called = {}
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("安装目录中的 CLI 应在停止服务和启动子进程前返回")
 
-    class Result:
-        returncode = 0
+    monkeypatch.setattr(cli.subprocess, "run", unexpected)
+    monkeypatch.setattr(cli, "_stop", unexpected)
 
-    def fake_run(argv, **_kwargs):
-        called["argv"] = argv
-        return Result()
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
-
-    assert cli.upgrade(src) == 0
-    assert called["argv"][0] == str((src / "NetAnchor.Cli.exe").resolve())
-    assert called["argv"][1] == "upgrade"
-    assert called["argv"][3] == str(src)
+    with pytest.raises(CliError, match="退出当前 CLI"):
+        cli.upgrade(src)
 
 
 def test_upgrade_from_install_dir_without_package_cli_fails(tmp_path, monkeypatch):
