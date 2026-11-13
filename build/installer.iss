@@ -271,8 +271,11 @@ begin
   if CurStep = usUninstall then
   begin
     Params := 'unregister';
+    { 默认按钮是"否"：/VERYSILENT 会把 MsgBox 当成选了默认按钮，
+      不能让它静默删掉用户的配置与日志 }
     if MsgBox('是否同时删除配置与日志？' + #13#10 +
-      '%ProgramData%\NetAnchor-Campus', mbConfirmation, MB_YESNO) = IDYES then
+      '%ProgramData%\NetAnchor-Campus', mbConfirmation,
+      MB_YESNO or MB_DEFBUTTON2) = IDYES then
       Params := Params + ' --purge';
 
     Code := -1;

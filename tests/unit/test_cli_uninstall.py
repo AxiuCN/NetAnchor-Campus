@@ -67,3 +67,50 @@ def test_uninstall_without_service_still_cleans_files(tmp_path, monkeypatch):
     assert "stop" not in events
     assert "delete_service" not in events
     assert not install.exists()
+
+def _quiet_uninstall(monkeypatch, tmp_path, base):
+    monkeypatch.setattr(cli, "query_state", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "installed_dir", lambda: tmp_path / "install")
+    monkeypatch.setattr(cli, "_close_running_clients", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_unregister_tray_autostart", lambda: None)
+
+    class Store:
+        def __init__(self) -> None:
+            self.base_dir = base
+
+        @property
+        def path(self):
+            return base / "config.json"
+
+    monkeypatch.setattr(cli, "ConfigStore", lambda *a, **k: Store())
+
+
+def test_purge_removes_config_and_logs(tmp_path, monkeypatch):
+    base = tmp_path / "ProgramData"
+    base.mkdir()
+    (base / "config.json").write_text("{}", encoding="utf-8")
+    _quiet_uninstall(monkeypatch, tmp_path, base)
+
+    assert cli.uninstall(purge=True) == 0
+    assert not base.exists(), "--purge 应删掉配置与日志目录"
+
+
+def test_without_purge_keeps_config(tmp_path, monkeypatch):
+    base = tmp_path / "ProgramData"
+    base.mkdir()
+    (base / "config.json").write_text("{}", encoding="utf-8")
+    _quiet_uninstall(monkeypatch, tmp_path, base)
+
+    assert cli.uninstall(purge=False) == 0
+    assert base.exists(), "默认必须保留配置"
+
+
+def test_purge_failure_returns_nonzero(tmp_path, monkeypatch):
+    base = tmp_path / "ProgramData"
+    base.mkdir()
+    _quiet_uninstall(monkeypatch, tmp_path, base)
+    monkeypatch.setattr(
+        cli, "_remove_tree", lambda *_a, **_k: (_ for _ in ()).throw(cli.CliError("拒绝访问"))
+    )
+
+    assert cli.uninstall(purge=True) == 1
