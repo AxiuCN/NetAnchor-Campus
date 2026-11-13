@@ -198,6 +198,26 @@ begin
   RunCli(Params, Dummy);
 end;
 
+function AutostartWanted(): Boolean;
+var
+  Tasks: String;
+begin
+  if WizardIsTaskSelected('autostart') then
+  begin
+    Result := True;
+    Exit;
+  end;
+  { 静默安装不会自动勾选任何任务。此时若用户没有显式给 /TASKS，
+    按默认（开）处理——否则 /VERYSILENT 会静默把已有的自启项删掉。 }
+  if WizardSilent then
+  begin
+    Tasks := ExpandConstant('{param:TASKS|}');
+    Result := Tasks = '';
+    Exit;
+  end;
+  Result := False;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Code: Integer;
@@ -206,7 +226,7 @@ begin
   if CurStep = ssPostInstall then
   begin
     Params := 'register --dir "' + ExpandConstant('{app}') + '"';
-    if not WizardIsTaskSelected('autostart') then
+    if not AutostartWanted() then
       Params := Params + ' --no-autostart';
 
     Code := -1;

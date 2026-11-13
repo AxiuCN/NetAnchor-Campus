@@ -382,7 +382,10 @@ def _start(silent: bool = False) -> None:
     try:
         win32serviceutil.StartService(SERVICE_NAME)
     except win32service.error as exc:
-        raise CliError(f"启动服务失败: {exc}") from exc
+        # 1056 ERROR_SERVICE_ALREADY_RUNNING：register 会在服务还活着时被再次调用，
+        # 那不是失败，后面的等待会确认它确实在跑
+        if exc.winerror != 1056:
+            raise CliError(f"启动服务失败: {exc}") from exc
     if not _wait_for("running"):
         raise CliError("服务未在 30 秒内进入 running")
     if not silent:
