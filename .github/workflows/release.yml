@@ -1,0 +1,80 @@
+name: Release
+
+# 打 vX.Y.Z 标签时构建安装包并创建 GitHub Release；
+# 手动触发只构建、上传 artifact，不建 Release（用于验证流水线）。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: 构建安装包
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: 发布前测试
+        run: python -m pytest -ra
+
+      - name: 校验标签与版本一致
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path src/netanchor/__init__.py -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $tag = $env:GITHUB_REF_NAME -replace '^v', ''
+          if ($tag -ne $ver) {
+            throw "标签 $tag 与 src/netanchor/__init__.py 的版本 $ver 不一致"
+          }
+          Write-Host "版本一致: $ver"
+
+      - name: 安装 Inno Setup 6
+        run: choco install innosetup --no-progress -y
+
+      - name: 构建安装包
+        shell: pwsh
+        run: ./build/make_installer.ps1
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: netanchor-installer
+          path: |
+            dist/installer/*.exe
+            dist/installer/SHA256SUMS.txt
+          retention-days: 14
+
+      - name: 创建 Release（草稿）
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ver = (Select-String -Path src/netanchor/__init__.py -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          gh release create $env:GITHUB_REF_NAME `
+            "dist/installer/NetAnchor-Campus-$ver-setup.exe" `
+            "dist/installer/SHA256SUMS.txt" `
+            --title "NetAnchor-Campus $ver" `
+            --draft `
+            --generate-notes
