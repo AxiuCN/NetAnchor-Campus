@@ -1,19 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "netanchor-campus"
 version = "0.3.1"
 description = "校园网 Dr.COM 断网自动重连（Windows 服务 + 托盘）"
 license = "GPL-3.0-only"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "ddddocr>=1.6",
+    "pywin32>=312",
+    "pystray>=0.19",
+    "Pillow>=10",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
-    "pywin32>=312",
     "pyinstaller>=6.22",
 ]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+netanchor = ["ui/assets/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

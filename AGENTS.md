@@ -6,7 +6,7 @@
 
 `NetAnchor-Campus`（原名 `CampusLink`）是 **PTU-CampusNet-AutoReconnect 的重写**：在校园网所在的机器上以 **Windows 服务**常驻，检测断网并按 Dr.COM 门户协议自动登录；托盘只是客户端，注销/切换用户不中断核心服务。
 
-技术栈：Python 3.10+ / pywin32 / pystray / Pillow / ddddocr；PyInstaller `onedir` 打四个 exe；许可证 GPL-3。当前版本见 `src/netanchor/__init__.py` 与 `pyproject.toml`。
+技术栈：Python 3.12+ / pywin32 / pystray / Pillow / ddddocr；PyInstaller `onedir` 打四个 exe；许可证 GPL-3。当前版本见 `src/netanchor/__init__.py` 与 `pyproject.toml`。
 
 旧仓库已归档，本地副本在 `<工作区>/.dsh/PTU-CampusNet-AutoReconnect`，**只读参考**（行为与协议可对照，结构与依赖不继承）。
 
