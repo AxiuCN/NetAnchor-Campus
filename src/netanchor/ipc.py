@@ -223,7 +223,9 @@ class PipeServer(threading.Thread):
         self._pipe_name = pipe_name
         self._sddl = sddl
         self._is_admin = is_admin
-        self._stop = threading.Event()
+        # 名字不能叫 _stop：Python 3.12 的 threading.Thread 内部有 _stop() 方法，
+        # 覆盖它是 fatal（结束时 _bootstrap_inner 会调用 self._stop()）。3.13 起才移除。
+        self._stop_event = threading.Event()
         self._ready = threading.Event()
         self.last_error = ""
 
@@ -235,7 +237,7 @@ class PipeServer(threading.Thread):
         return self._ready.wait(timeout)
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
         try:  # 连接一次自身，解除 ConnectNamedPipe 的阻塞
             win32file.CreateFile(
                 self._pipe_name,
@@ -256,7 +258,7 @@ class PipeServer(threading.Thread):
     def _create_pipe(self):
         """创建实例；首实例语义，被冒充实例占用时重试后放弃并记录错误。"""
         for _ in range(10):
-            if self._stop.is_set():
+            if self._stop_event.is_set():
                 return None
             try:
                 return win32pipe.CreateNamedPipe(
@@ -287,7 +289,7 @@ class PipeServer(threading.Thread):
 
     def _run(self) -> None:
         announced = False
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             handle = self._create_pipe()
             if handle is None:
                 return
