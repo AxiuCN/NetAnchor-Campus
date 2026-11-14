@@ -65,6 +65,46 @@ jobs:
             dist/installer/SHA256SUMS.txt
           retention-days: 14
 
+      - name: 生成发布说明
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path src/netanchor/__init__.py -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $lines = Get-Content CHANGELOG.md
+          $head = $lines | Select-String -Pattern "^#\s+$([regex]::Escape($ver))\s*$" | Select-Object -First 1
+          if (-not $head) {
+            throw "CHANGELOG.md 里找不到 # $ver 一节，先补更新记录"
+          }
+          $next = $lines | Select-String -Pattern '^#\s+' |
+            Where-Object { $_.LineNumber -gt $head.LineNumber } | Select-Object -First 1
+          $body = if ($next) {
+            $lines[$head.LineNumber..($next.LineNumber - 2)]
+          } else {
+            $lines[$head.LineNumber..($lines.Count - 1)]
+          }
+          $bodyText = ($body -join "`n").Trim()
+
+          # 单引号 here-string：保留 markdown 反引号原样
+          $footer = @'
+
+          ---
+
+          **安装前请知道**
+
+          - 安装包**未签名**，SmartScreen 会提示“未知发布者”，需要手动选择“仍要运行”。
+          - 已在一台已装机器上验收（全新安装、升级、静默安装、卸载两分支、失败保护），**尚未在干净虚拟机上验证**（目标机无 Python / VC 运行库的情形）。
+          - 运行环境：Windows 10 1607 及以上，64 位。
+          - 校验：`SHA256SUMS.txt` 中的哈希应与下载文件一致。
+
+          **升级说明**
+
+          - 直接运行新版本 setup.exe 即可；会先停服务、备份旧目录，失败自动回滚。
+          - 配置与凭据在 `%ProgramData%\NetAnchor-Campus`，不受安装目录影响。
+          '@
+
+          ($bodyText + "`n" + $footer) | Set-Content -Path release-notes.md -Encoding utf8
+          Write-Host "发布说明已生成（$($body.Count) 行）"
+
       - name: 创建 Release（草稿）
         if: github.ref_type == 'tag'
         shell: pwsh
@@ -76,5 +116,5 @@ jobs:
             "dist/installer/NetAnchor-Campus-$ver-setup.exe" `
             "dist/installer/SHA256SUMS.txt" `
             --title "NetAnchor-Campus $ver" `
-            --draft `
-            --generate-notes
+            --notes-file release-notes.md `
+            --draft

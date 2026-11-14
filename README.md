@@ -40,23 +40,19 @@
 
 ## 安装
 
-**推荐：下载安装包** `NetAnchor-Campus-<版本>-setup.exe`，双击即可（会请求 UAC）。
+到 [Releases](https://github.com/AxiuCN/NetAnchor-Campus/releases/latest) 下载
+`NetAnchor-Campus-<版本>-setup.exe`，双击运行（会请求 UAC）。
 
-- 安装到 `C:\Program Files\NetAnchor-Campus`（可在向导里改）
-- 注册服务 `NetAnchorCampus` 与机器级托盘自启项
-- 控制面板「程序和功能」里会出现卸载项
+安装会：
 
-> 安装包目前**未签名**，SmartScreen 会提示"未知发布者"，需要手动选择"仍要运行"。
+1. 复制文件到 `C:\Program Files\NetAnchor-Campus`（向导里可改）
+2. 注册服务 `NetAnchorCampus`（LocalSystem、开机自启）与机器级托盘自启项
+3. 在控制面板「程序和功能」里登记卸载项
 
-**备选：命令行安装**（无安装包时，或用自定义目录）：
+> 安装包**未签名**，SmartScreen 会提示“未知发布者”，需要手动选择“仍要运行”。
 
-```powershell
-# 管理员终端，在解压出来的 onedir 目录里执行
-.\NetAnchor.Cli.exe install
-.\NetAnchor.Cli.exe install --dir 'C:\Apps\NetAnchor-Campus'
-```
-
-两种方式共用同一套安装逻辑；安装目录以服务实际注册的路径为准。
+> 批量部署或无法使用安装包时，可用命令行（`NetAnchor.Cli.exe`），
+> 步骤见 [docs/部署与运维.md](docs/部署与运维.md) 的“命令行（维护与自动化）”。
 
 ## 首次配置
 
