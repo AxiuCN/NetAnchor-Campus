@@ -18,9 +18,9 @@
 | P4 | 服务运行时、日志、最小托盘 | ✅ 完成 |
 | P5 | 打包与安装链路（CLI 方式） | ✅ 完成（VM 实测，含重启自启） |
 | P6 | **真机验证**（校园网那台机器上的真实登录与断网重连） | ✅ **通过（2026-10-30）**，见 [历史与根因](历史与根因.md) |
-| P7 | **安装包**（双击 setup.exe、控制面板卸载项） | ⏳ 仅候选方案，未实现、未验证 |
+| P7 | **安装包**（双击 setup.exe、控制面板卸载项） | ✅ **已实现并验收（2026-11-14）**，见 [安装包](安装包.md) |
 
-**结论先说**：功能链路已在真机闭环——自动登录、断网重连都由程序自己完成（`登录结果 result=1` → `online`）；安装体验仍是"CLI 式"，不是安装包。
+**结论先说**：功能链路已在真机闭环——自动登录、断网重连都由程序自己完成（`登录结果 result=1` → `online`）；安装体验已由双击式安装包提供（简体中文向导 + 控制面板卸载项）。
 
 ### 外部复审整改进度（2026-10-22 复审，2026-10-26 更新）
 
@@ -37,14 +37,16 @@
 
 ## 3. 交付形态现状（重要）
 
-现在的"安装"是：
+两种方式共存，共用同一套安装实现：
 
-1. 把 `dist\NetAnchor-Campus\` 整个目录拷到目标机
-2. 以**管理员终端**执行 `NetAnchor.Cli.exe install`
+1. **安装包**（推荐）：双击 `NetAnchor-Campus-<版本>-setup.exe`，向导提权、简体中文、
+   控制面板卸载项。安装器只铺文件与调度，服务与自启由
+   `NetAnchor.Cli.exe register` 建立（启动方式仍由程序自己管）。
+2. **命令行**：把 `dist\NetAnchor-Campus\` 拷到目标机，以管理员终端执行
+   `NetAnchor.Cli.exe install`。
 
-`install` 会复制到 `C:\Program Files\NetAnchor-Campus\`、写配置模板、注册服务、启动。
-
-**还没有**：双击即用的 `setup.exe`、自带 UAC 提权、控制面板"程序和功能"卸载项、安装向导、单文件分发。这些属于 P7 的候选方案，**尚未验证**，当前不承诺一定做。
+升级走 `prepare → 旧目录改名 .previous → 铺新文件 → register`，中途失败回滚。
+安装包目前**未签名**，SmartScreen 会提示一次。细节见 [安装包](安装包.md)。
 
 ## 4. 代码地图
 
@@ -81,14 +83,14 @@
 
 | 项 | 结果 | 证据位置 |
 |---|---|---|
-| 离线测试 | `154 passed, 2 skipped`（2026-10-30） | 本机 `pytest` 输出 |
+| 离线测试 | `173 passed, 2 skipped`（2026-11-14，Python 3.12 与 3.14 各跑一次） | `pytest` 输出 |
 | 服务生命周期 | 安装/启动/停止/卸载、崩溃 5 s 自动拉起、注销与切换用户 PID 不变 | [历史与根因 · P1](历史与根因.md) |
 | 安装与升级 | 安装、升级、崩溃恢复、卸载、`--purge` 全部实测 | [历史与根因 · P5](历史与根因.md) |
 | 内存 | S1 25.7 MB / S3 子进程 25.9 MB（工作进程峰值 87.2 MB） | [模块-服务](模块-服务.md) |
 | 重启自启 | 服务先于用户登录启动 | [历史与根因 · P5](历史与根因.md) |
 | **真实登录 / 断网重连** | **✅ 通过（2026-10-30）**：程序自行完成探测→取码→识别→校验→登录（`result=1`）→复检→`online` | [历史与根因 · P6](历史与根因.md) |
 
-> 测试数的追溯方式：`95` 对应包含 `src/` 与 `tests/` 的初始提交；此后只提交过文档，测试数不变。若后续代码变更，请以当时的 `pytest` 输出为准。
+> 测试数随代码变化，上表只是当时快照；以 CI（`.github/workflows/ci.yml`）或本机 `pytest` 的当前输出为准。
 
 ## 7. 已知问题与取舍
 
@@ -96,7 +98,7 @@
 2. 升级时需要先结束托盘进程（已自动处理），否则 exe 被占用。
 3. 体积约 216 MB（onedir）；onefile 更小但启动慢、杀软误报风险更高。
 4. 服务以 `LocalSystem` 运行，权限高于必要值（为了不依赖任何用户账户）。
-5. 安装体验目前是 CLI，不是安装包（P7 仅为候选方案，尚未验证）。
+5. 安装包已可用（简体中文向导、控制面板卸载项），但**未签名**，SmartScreen 会提示"未知发布者"；且尚未在干净虚拟机上验证。
 6. 托盘开机自启：0.2.5 起由安装程序写机器级 `HKLM\...\Run`（全体用户生效，单用户可在菜单关闭），见 [部署与运维](部署与运维.md)。
 7. 真机验证已通过，但接口行为仍以旧实现与实测为准；门户换版本时参数可能变化。
 
@@ -112,12 +114,15 @@
 ## 9. 如何复现
 
 ```powershell
-python -m pytest                     # 需要 Python 3.14 + 依赖
-pyinstaller build/netanchor.spec     # 产物在 dist/NetAnchor-Campus
-.NetAnchor.Cli.exe install           # 管理员终端
+python -m venv .venv
+.\.venv\Scripts\pip install -e ".[dev]"
+.\.venv\Scripts\python -m pytest           # 离线套件
+python -m PyInstaller build\netanchor.spec  # onedir → dist\NetAnchor-Campus
+pwsh -File build\make_installer.ps1         # 安装包 → dist\installer（需 Inno Setup 6）
 ```
 
-依赖：Python 3.14、`ddddocr`、`pywin32`、`pystray`、`Pillow`、`PyInstaller`、`pytest`。
+依赖：**Python 3.12+**（Windows x64）、`ddddocr`、`pywin32`、`pystray`、`Pillow`；
+开发额外需 `pytest`、`PyInstaller`，打安装包需 Inno Setup 6。
 
 ## 10. 文档索引
 
@@ -125,6 +130,7 @@ pyinstaller build/netanchor.spec     # 产物在 dist/NetAnchor-Campus
 - [协议-门户.md](协议-门户.md)：Dr.COM 接口、参数与错误码
 - [部署与运维.md](部署与运维.md)：安装升级卸载、自启、日志、排障
 - [模块-服务.md](模块-服务.md)、[模块-托盘与CLI.md](模块-托盘与CLI.md)：实现细节
+- [安装包.md](安装包.md)：安装包构建、三条流程、发布与验收清单
 - [测试.md](测试.md)：四层测试与阶段门禁
 - [历史与根因.md](历史与根因.md)：各阶段实测、安全模型修订、事故复盘
 - [待办.md](待办.md)：已知风险、未完成项、明确不做的事

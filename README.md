@@ -1,122 +1,153 @@
-# NetAnchor-Campus
+<p align="center">
+  <img src="src/netanchor/ui/assets/app.png" width="132" alt="NetAnchor-Campus 图标">
+</p>
 
-> 测试迭代中，暂不可用
+<h1 align="center">NetAnchor-Campus</h1>
 
-莆田学院校园网 Dr.COM 断网自动重连工具。核心是 **Windows 服务**，用户注销、切换用户都不中断；托盘只是客户端。
+<p align="center">莆田学院校园网 Dr.COM 断网自动重连 · Windows 服务 + 托盘</p>
 
-## 当前状态（2026-10-18）
+<p align="center">
+  <a href="https://github.com/AxiuCN/NetAnchor-Campus/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/AxiuCN/NetAnchor-Campus/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="版本" src="https://img.shields.io/badge/version-0.4.0-2ecc71">
+  <img alt="平台" src="https://img.shields.io/badge/platform-Windows%2010%201607%2B-0078d4">
+  <img alt="许可" src="https://img.shields.io/badge/license-GPL--3.0-blue">
+</p>
 
-- 功能链路已完成，离线测试 95 项通过
-- **尚未在校园网真机上验证**真实登录与断网重连
-- **还没有安装包**：当前安装方式是在管理员终端执行 `NetAnchor.Cli.exe install`，不是双击 setup.exe
+---
 
-进度、验证范围与已知缺口见 [docs/audit-notes.md](docs/audit-notes.md)，更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+核心是一个 **Windows 服务**：注销、切换用户、锁屏都不会中断；托盘只是它的客户端，关掉托盘不影响重连。断网后由服务自己探测门户、取验证码、识别、登录，并把结果以状态色显示在托盘角标上。
+
+## 托盘图标即状态
+
+角标颜色跟着服务状态走：
+
+| 角标 | 状态 | 含义 |
+|---|---|---|
+| 🟢 | 已连接 | 在线，无需动作 |
+| 🔴 | 重连中 | 正在登录，通常几秒内结束 |
+| 🟠 | 门户不可达 | 探测不到认证门户（真离线、代理劫持或被 AC 拦） |
+| 🟠 | 缺少配置 | 还没填账号或密码 |
+| ⚪ | 已停止 | 服务未运行或托盘连不上服务 |
 
 ## 组成
 
-| 可执行文件 | 作用 |
-|---|---|
-| `NetAnchor.Service.exe` | 核心服务：检测断网、走门户协议自动登录；以 `LocalSystem` 运行，开机自启 |
-| `NetAnchor.Tray.exe` | 托盘客户端：显示状态、启停监控、改设置；退出不影响服务 |
-| `NetAnchor.Ocr.exe` | 验证码识别工作进程，只在需要时被拉起 |
-| `NetAnchor.Cli.exe` | 安装 / 升级 / 卸载 / 查看状态 |
+| 可执行文件 | 会话 / 账户 | 作用 |
+|---|---|---|
+| `NetAnchor.Service.exe` | Session 0 / LocalSystem | 检测断网、走门户协议登录、IPC 服务端；开机自启 |
+| `NetAnchor.Tray.exe` | 交互用户 | 状态显示、启停监控、改设置；退出不影响服务 |
+| `NetAnchor.Ocr.exe` | Session 0 / LocalSystem | 验证码识别，按需拉起、识别一张即退出 |
+| `NetAnchor.Cli.exe` | 管理员终端 | 安装 / 升级 / 卸载 / 状态，以及安装包用的内部命令 |
 
 ## 安装
 
-需要管理员权限（右键终端 → 以管理员身份运行）。解压发布包后，在该目录执行：
+**推荐：下载安装包** `NetAnchor-Campus-<版本>-setup.exe`，双击即可（会请求 UAC）。
+
+- 安装到 `C:\Program Files\NetAnchor-Campus`（可在向导里改）
+- 注册服务 `NetAnchorCampus` 与机器级托盘自启项
+- 控制面板「程序和功能」里会出现卸载项
+
+> 安装包目前**未签名**，SmartScreen 会提示"未知发布者"，需要手动选择"仍要运行"。
+
+**备选：命令行安装**（无安装包时，或用自定义目录）：
 
 ```powershell
+# 管理员终端，在解压出来的 onedir 目录里执行
 .\NetAnchor.Cli.exe install
-# 或安装到其它目录
 .\NetAnchor.Cli.exe install --dir 'C:\Apps\NetAnchor-Campus'
 ```
 
-> 目前没有双击安装器；`install` 需要从管理员终端发起。安装包（setup.exe）尚未实现。
-> 安装目录会记录在服务里，之后 `upgrade` / `uninstall` / `status` 都以服务实际注册的路径为准。
+两种方式共用同一套安装逻辑；安装目录以服务实际注册的路径为准。
 
-安装会：
+## 首次配置
 
-1. 复制文件到安装目录（默认 `C:\Program Files\NetAnchor-Campus\`，可用 `--dir` 指定）
-2. 在 `C:\ProgramData\NetAnchor-Campus\` 生成配置模板
-3. 注册服务 `NetAnchorCampus`（自动启动、失败自动重启）
-4. 启动服务
+安装后托盘会自动起来（也可手动运行 `<安装目录>\NetAnchor.Tray.exe`），右键 → **设置…**，填：
 
-安装完成后启动托盘：`<安装目录>\NetAnchor.Tray.exe`。
-
-## 配置
-
-两种方式：
-
-- 托盘菜单 → **设置…**（普通权限即可保存；修改门户地址时会要求重新输入密码）
-- 直接编辑 `C:\ProgramData\NetAnchor-Campus\config.json`（文件 ACL 只给管理员，需要用管理员权限编辑）
-
-关键配置项：
-
-| 键 | 说明 |
+| 项 | 说明 |
 |---|---|
-| `portal.candidates[].host` | 门户地址；可配多个候选，启动时逐个探测 |
-| `portal.candidates[].login_port` | 登录接口端口 |
-| `portal.candidates[].eportal_port` | 取码接口端口 |
-| `account.username` | 学号（不含运营商后缀） |
-| `account.carrier` | `校园用户` / `校园电信` / `校园联通` / `校园其他` |
-| `monitor.check_interval_seconds` | 在线检测间隔（秒） |
-| `monitor.max_captcha_attempts` | 单轮登录的换码次数上限 |
-| `monitor.backoff_seconds` | 失败退避阶梯（秒） |
+| 学号 | 不含运营商后缀 |
+| 密码 | 需与门户地址同时提交；改地址后旧密码作废，必须重输 |
+| 运营商 | `校园用户` / `校园电信` / `校园联通` / `校园其他` |
+| 门户地址 / 端口 | 认证网关的地址与登录、取码端口 |
+| 检测间隔 | 在线检测周期，默认 30 秒 |
 
-密码以 Machine DPAPI 加密后存于 `password_protected`，不会以明文落盘；配置文件 ACL 只允许 `SYSTEM` 与 `Administrators` 读取。
-
-密码密文与**门户地址**绑定：修改门户地址时必须同时重新输入一次密码，旧密文随即失效。这样即使有人改了地址，服务也不会把已存的密码发到新地址。
+密码用 **Machine DPAPI** 加密后写入 `C:\ProgramData\NetAnchor-Campus\config.json`，且**密文与门户地址绑定**——即使有人改了地址，服务也不会把已存的密码发到新地址。配置文件 ACL 只给 `SYSTEM` 与 `Administrators`。
 
 ## 日常操作
 
-```powershell
-# 查看状态
-.\NetAnchor.Cli.exe status
+托盘菜单：立即重连、启动/停止监控、设置…、打开日志目录、开机自启托盘开关、退出托盘。
 
-# 服务控制
+```powershell
+& '<安装目录>\NetAnchor.Cli.exe' status
 sc.exe query NetAnchorCampus
 sc.exe stop  NetAnchorCampus
 sc.exe start NetAnchorCampus
 ```
 
-托盘菜单：立即重连、启动/停止监控、设置、打开日志目录、开机自启托盘开关、退出托盘。
-
-托盘自启由安装程序写机器级注册项 `HKLM\...\Run`（`...\NetAnchor.Tray.exe --autostart`），**所有本地用户登录都会拉起托盘**，卸载时删除；单个用户可在菜单里关掉（关闭只写该用户的开关，下次自启拉起时直接退出，手动双击仍可用）。服务随开机启动，两者互不影响。
+托盘自启由安装程序写 `HKLM\...\Run`（`"<安装目录>\NetAnchor.Tray.exe" --autostart`），**所有本地用户登录都会拉起**；单个用户可以在菜单里关掉，关闭只写该用户自己的开关，手动双击仍可用。
 
 ## 升级与卸载
 
 ```powershell
-.\NetAnchor.Cli.exe upgrade      # 停服务 → 备份 → 替换 → 启动；失败自动回滚
-.\NetAnchor.Cli.exe uninstall    # 删服务与安装目录，保留配置与日志
-.\NetAnchor.Cli.exe uninstall --purge   # 连配置与日志一起删
+# 有安装包时：直接运行新版本 setup.exe
+# 或命令行：
+& '<安装目录>\NetAnchor.Cli.exe' uninstall      # 保留配置与日志
+.\NetAnchor.Cli.exe install --dir '<安装目录>'   # 再装新版
 ```
+
+安装包升级会先停服务、把旧目录改名为 `<安装目录>.previous` 再铺新文件，失败时自动回滚；卸载时会询问是否同时删除配置与日志，**默认保留**。
 
 ## 日志
 
-- 服务：`C:\ProgramData\NetAnchor-Campus\logs\service.log`，按天轮转保留 7 份
-- 托盘：`%LOCALAPPDATA%\NetAnchor-Campus\logs\tray.log`，按天轮转保留 7 份（托盘以普通用户运行，写不进服务的 ACL 目录）
+| 来源 | 位置 | 轮转 |
+|---|---|---|
+| 服务 | `C:\ProgramData\NetAnchor-Campus\logs\service.log` | 按天，保留 7 份 |
+| 托盘 | `%LOCALAPPDATA%\NetAnchor-Campus\logs\tray.log` | 按天，保留 7 份 |
 
-日志不含密码与完整请求串。
+日志不含密码原文与完整请求参数串，账号只留前 3 位。排障顺序见 [docs/部署与运维.md](docs/部署与运维.md)。
 
 ## 已知限制
 
-- 验证码识别不是 100%：单张约 85%，同一轮换码最多 3 次，仍失败则进入退避重试。
-- 登录绑定发起请求的源 IP/MAC，**只有校园网所在的那台机器**安装才有意义。
-- 学校升级门户系统后，接口参数可能变化。
+- 验证码识别不是 100%：单张约 85%，同一轮最多换码 3 次，仍失败则进入退避重试
+- 登录绑定发起请求的源 IP/MAC，**只有在校园网那台机器上安装才有意义**
+- 学校升级门户系统后接口参数可能变化
+- 未签名，SmartScreen 会拦一次
+- 约 216 MB（含 OCR 模型与 ONNX 运行时）
 
-## 开发
+## 从源码开发
+
+需要 **Python 3.12+**（Windows x64）。
 
 ```powershell
-python -m pytest                      # 离线套件
-python -m netanchor.service_main --console   # 开发态前台运行（需在 src 下设置 PYTHONPATH）
-pyinstaller build/netanchor.spec      # 打包到 dist/NetAnchor-Campus
+python -m venv .venv
+.\.venv\Scripts\pip install -e ".[dev]"
+.\.venv\Scripts\python -m pytest        # 离线套件，不需要管理员
 ```
 
-开发依赖：Python 3.14、`ddddocr`、`pywin32`、`pystray`、`Pillow`、`PyInstaller`、`pytest`。
+打包与安装器：
+
+```powershell
+python -m PyInstaller build\netanchor.spec    # onedir → dist\NetAnchor-Campus
+pwsh -File build\make_installer.ps1           # 安装包 → dist\installer（需 Inno Setup 6）
+```
+
+开发态前台跑服务：`$env:PYTHONPATH='src'; python -m netanchor.service_main --console`。
+
+## 文档
+
+| 想了解 | 读 |
+|---|---|
+| 全部文档索引 | [docs/README.md](docs/README.md) |
+| 设计决策、进程模型、IPC、安全边界 | [docs/架构.md](docs/架构.md) |
+| 门户协议、参数与错误码 | [docs/协议-门户.md](docs/协议-门户.md) |
+| 安装升级卸载、排障 | [docs/部署与运维.md](docs/部署与运维.md) |
+| 安装包构建与发布 | [docs/安装包.md](docs/安装包.md) |
+| 测试分层与门禁 | [docs/测试.md](docs/测试.md) |
+| 已知风险与明确不做的事 | [docs/待办.md](docs/待办.md) |
+| 更新记录 | [CHANGELOG.md](CHANGELOG.md) |
 
 ## 许可
 
-GPL-3.0，见 `LICENSE`。
+GPL-3.0，见 [LICENSE](LICENSE)。
 
 ## 图标与第三方内容
 
