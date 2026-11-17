@@ -3,12 +3,39 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import os
 import sys
 from pathlib import Path
 
 LOGGER_NAME = "netanchor"
 FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 DATEFMT = "%Y-%m-%d %H:%M:%S"
+
+
+class _DatedFileHandler(logging.handlers.TimedRotatingFileHandler):
+    """按天轮转，并把日期插在扩展名之前。
+
+    默认行为是 `service.log.2026-11-14`，`.log` 不再是最后一个扩展名，
+    双击时系统不把它当文本文件。改成 `service.2026-11-14.log`。
+    """
+
+    def rotation_filename(self, default_name: str) -> str:
+        stem, ext = os.path.splitext(self.baseFilename)
+        suffix = default_name[len(self.baseFilename):]
+        return f"{stem}{suffix}{ext}"
+
+    def getFilesToDelete(self):  # noqa: N802 - 覆盖标准库方法
+        directory, base = os.path.split(self.baseFilename)
+        stem, ext = os.path.splitext(base)
+        prefix = f"{stem}."
+        names = sorted(
+            name
+            for name in os.listdir(directory)
+            if name != base and name.startswith(prefix) and name.endswith(ext)
+        )
+        if self.backupCount <= 0 or len(names) < self.backupCount:
+            return []
+        return [os.path.join(directory, name) for name in names[: len(names) - self.backupCount]]
 
 
 def setup_logging(
@@ -30,7 +57,7 @@ def setup_logging(
         logger.removeHandler(handler)
         handler.close()
 
-    file_handler = logging.handlers.TimedRotatingFileHandler(
+    file_handler = _DatedFileHandler(
         filename=directory / filename,
         when="midnight",
         backupCount=max_files,
