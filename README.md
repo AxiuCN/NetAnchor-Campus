@@ -143,7 +143,9 @@ pwsh -File build\make_installer.ps1           # 安装包 → dist\installer（�
 
 ## 许可
 
-GPL-3.0，见 [LICENSE](LICENSE)。
+GPL-3.0-only，见 [LICENSE](LICENSE)。
+
+安装包内同时包含 Python 运行时、Tcl/Tk、pystray、Pillow、OpenCV、ONNX Runtime 等第三方组件，各自保留原许可，清单见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
 
 ## 图标与第三方内容
 

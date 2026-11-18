@@ -40,6 +40,8 @@ WizardStyle=modern
 CloseApplications=no
 RestartApplications=no
 UsePreviousAppDir=yes
+; 首次安装显示 GPL-3.0 许可页，正文来自仓库根目录
+LicenseFile=..\LICENSE
 ; 简体中文必须是默认语言：LanguageDetectionMethod=none 时取 [Languages] 第一项
 LanguageDetectionMethod=none
 ShowLanguageDialog=yes
@@ -53,6 +55,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "..\dist\NetAnchor-Campus\*"; DestDir: "{app}"; \
   Flags: ignoreversion recursesubdirs createallsubdirs
+
+; GPL-3.0 要求分发目标代码时随附许可证副本
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Tasks]
 Name: "autostart"; Description: "开机自动启动托盘（所有本地用户）"

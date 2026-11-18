@@ -80,7 +80,15 @@ $payloadVersion = (& (Join-Path $payload 'NetAnchor.Cli.exe') --version) -replac
 if ($payloadVersion.Trim() -ne $version) {
     throw "打包产物是 $payloadVersion，与源码版本 $version 不一致。请去掉 -SkipBuild 重新构建。"
 }
-Write-Host "打包产物版本: $payloadVersion"
+
+# 版本号没变也可能改了代码（同版本重新构建），再比一次时间戳
+$payloadTime = (Get-Item -LiteralPath (Join-Path $payload 'NetAnchor.Tray.exe')).LastWriteTime
+$newest = Get-ChildItem -LiteralPath (Join-Path $repo 'src') -Recurse -File -Filter *.py |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($newest -and $newest.LastWriteTime -gt $payloadTime) {
+    throw "打包产物（$payloadTime）比源码（$($newest.Name) @ $($newest.LastWriteTime)）旧，请去掉 -SkipBuild 重新构建。"
+}
+Write-Host "打包产物版本: $payloadVersion（$payloadTime）"
 
 Write-Host '打包安装程序 ...'
 & $iscc "/DAppVersion=$version" 'build\installer.iss'

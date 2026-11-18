@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -33,6 +34,7 @@ LOG_DIR_NAME = "NetAnchor-Campus"
 SESSION_WINDOW_CLASS = "NetAnchorSessionEndWatcher"
 # 安装器（NetAnchor.Cli prepare）请托盘退出的注册消息，跨进程同名同值
 TRAY_QUIT_MESSAGE = "NetAnchor-Tray-Quit"
+REPO_URL = "https://github.com/AxiuCN/NetAnchor-Campus"
 
 _instance_mutex = None
 
@@ -375,6 +377,7 @@ class TrayApp:
         style.configure("Section.TLabel", font=(family, base_size + 2, "bold"), foreground="#111827")
         style.configure("Hint.TLabel", font=(family, base_size - 1), foreground="#6b7280")
         style.configure("Field.TLabel", font=(family, base_size), foreground="#4b5563")
+        style.configure("Link.TLabel", font=(family, base_size - 1), foreground="#2563eb")
 
         # 窗口与标题栏图标
         art = _base_icon()
@@ -479,6 +482,19 @@ class TrayApp:
             style="Hint.TLabel",
             wraplength=max(320, round(dpi / 96 * 380)),
         ).pack(anchor="w")
+
+        # 开源信息：版本与许可 + 地址，地址可点
+        footer = ttk.Frame(outer)
+        footer.pack(fill="x", pady=(pad, 0))
+        ttk.Label(
+            footer, text=f"NetAnchor-Campus {__version__} · GPL-3.0", style="Hint.TLabel"
+        ).pack(anchor="w")
+        link_row = ttk.Frame(footer)
+        link_row.pack(anchor="w")
+        ttk.Label(link_row, text="开源地址：", style="Hint.TLabel").pack(side="left")
+        link = ttk.Label(link_row, text=REPO_URL, style="Link.TLabel", cursor="hand2")
+        link.pack(side="left")
+        link.bind("<Button-1>", lambda _event: webbrowser.open(REPO_URL))
 
         def save() -> None:
             try:
