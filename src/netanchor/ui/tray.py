@@ -372,9 +372,9 @@ class TrayApp:
         style.configure(".", font=(family, base_size))
         style.configure("Title.TLabel", font=(family, base_size + 4, "bold"))
         style.configure("Sub.TLabel", font=(family, base_size - 1), foreground="#6b7280")
-        style.configure("Section.TLabel", font=(family, base_size, "bold"), foreground="#374151")
+        style.configure("Section.TLabel", font=(family, base_size + 2, "bold"), foreground="#111827")
         style.configure("Hint.TLabel", font=(family, base_size - 1), foreground="#6b7280")
-        style.configure("Field.TLabel", font=(family, base_size))
+        style.configure("Field.TLabel", font=(family, base_size), foreground="#4b5563")
 
         # 窗口与标题栏图标
         art = _base_icon()
@@ -411,7 +411,11 @@ class TrayApp:
         entries: dict[str, object] = {}
 
         def section(title: str) -> ttk.Frame:
-            ttk.Label(outer, text=title, style="Section.TLabel").pack(anchor="w", pady=(pad // 2, 4))
+            head = ttk.Frame(outer)
+            head.pack(fill="x", pady=(pad, 2))
+            # 强调色竖条：靠字体差不够，加一条 3px 色块把层级拉开
+            tk.Frame(head, width=3, height=base_size + 8, background="#b03a48").pack(side="left")
+            ttk.Label(head, text=title, style="Section.TLabel").pack(side="left", padx=(8, 0))
             box = ttk.Frame(outer)
             box.pack(fill="x")
             return box
@@ -419,7 +423,7 @@ class TrayApp:
         def row(box: ttk.Frame, label: str, value, width: int = 30, show=None,
                 expand: bool = True, suffix: str = ""):
             holder = ttk.Frame(box)
-            holder.pack(fill="x", pady=2)
+            holder.pack(fill="x", pady=2, padx=(12, 0))
             ttk.Label(holder, text=label, width=10, style="Field.TLabel", anchor="w").pack(side="left")
             var = tk.StringVar(value=str(value))
             entry = ttk.Entry(holder, textvariable=var, width=width, show=show)
@@ -436,7 +440,7 @@ class TrayApp:
         entries["password"] = row(account_box, "新密码", "", show="*")
 
         carrier_holder = ttk.Frame(account_box)
-        carrier_holder.pack(fill="x", pady=2)
+        carrier_holder.pack(fill="x", pady=2, padx=(12, 0))
         ttk.Label(carrier_holder, text="运营商", width=10, style="Field.TLabel", anchor="w").pack(side="left")
         carrier_var = tk.StringVar(value=account.get("carrier", "校园其他"))
         ttk.Combobox(
@@ -448,7 +452,7 @@ class TrayApp:
         portal_box = section("门户")
         entries["host"] = row(portal_box, "门户地址", candidate.get("host", ""))
         ports = ttk.Frame(portal_box)
-        ports.pack(fill="x", pady=2)
+        ports.pack(fill="x", pady=2, padx=(12, 0))
         ttk.Label(ports, text="端口", width=10, style="Field.TLabel", anchor="w").pack(side="left")
         login_var = tk.StringVar(value=str(candidate.get("login_port", 80)))
         eportal_var = tk.StringVar(value=str(candidate.get("eportal_port", 801)))
@@ -465,7 +469,7 @@ class TrayApp:
             width=8, expand=False, suffix="秒",
         )
         ttk.Label(outer, text="断网后按退避阶梯重试，不会连续轰炸门户。", style="Hint.TLabel").pack(
-            anchor="w", pady=(2, 0)
+            anchor="w", pady=(2, 0), padx=(12, 0)
         )
 
         ttk.Separator(outer, orient="horizontal").pack(fill="x", pady=(pad, pad // 2))
