@@ -55,7 +55,9 @@ Source: "..\dist\NetAnchor-Campus\*"; DestDir: "{app}"; \
   Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Tasks]
-Name: "autostart"; Description: "开机自动启动托盘（所有本地用户）"; Flags: checkedonce
+Name: "autostart"; Description: "开机自动启动托盘（所有本地用户）"
+; 不能加 checkedonce：升级时它会强制不勾选，register 收到 --no-autostart
+; 就把已有的 HKLM 自启项删了。默认不勾选反而依赖 UsePreviousTasks 记住上次选择。
 
 [Run]
 Filename: "{app}\{#TrayExe}"; Description: "立即启动托盘"; \
@@ -145,6 +147,18 @@ begin
       '继续会降级到旧版本。确定继续吗？', mbConfirmation, MB_YESNO) = IDYES;
 end;
 
+function StopAndDeleteService(): Boolean;
+var
+  Code: Integer;
+  Sc: String;
+begin
+  Sc := ExpandConstant('{sys}\sc.exe');
+  { 服务可能已经不在了，stop 失败不算错 }
+  Exec(Sc, 'stop {#ServiceName}', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Result := Exec(Sc, 'delete {#ServiceName}', '', SW_HIDE, ewWaitUntilTerminated, Code)
+    and (Code = 0);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Code: Integer;
@@ -158,8 +172,24 @@ begin
   Target := ExpandConstant('{app}');
   if not FileExists(Target + '\{#CliExe}') then
   begin
-    Result := '检测到已有安装，但找不到 ' + Target + '\{#CliExe}。' + #13#10 +
-      '请先用它执行 uninstall，再重新运行本安装包。';
+    { 典型场景：安装目录被手动删了，但服务登记还挂在 SCM 里。
+      此时没有任何可执行的 CLI，只能由安装器自己清掉再按全新安装继续。 }
+    if MsgBox('检测到残留的服务登记，但安装目录已不存在：' + #13#10 +
+        Target + #13#10 + #13#10 +
+        '这通常是手动删除安装目录造成的。是否删除该服务登记并继续安装？',
+        mbConfirmation, MB_YESNO or MB_DEFBUTTON1) = IDYES then
+    begin
+      if not StopAndDeleteService() then
+      begin
+        Result := '删除残留的服务登记失败。请以管理员身份执行：' + #13#10 +
+          'sc delete {#ServiceName}';
+        Exit;
+      end;
+      UpgradeMode := False;
+      Exit;
+    end;
+    Result := '检测到残留的服务登记，但安装目录已不存在。' + #13#10 +
+      '请以管理员身份执行 sc delete {#ServiceName} 后重新运行本安装包。';
     Exit;
   end;
 

@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/AxiuCN/NetAnchor-Campus/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/AxiuCN/NetAnchor-Campus/actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="版本" src="https://img.shields.io/badge/version-0.5.0-2ecc71">
+  <img alt="版本" src="https://img.shields.io/badge/version-0.5.1-2ecc71">
   <img alt="平台" src="https://img.shields.io/badge/platform-Windows%2010%201607%2B-0078d4">
   <img alt="许可" src="https://img.shields.io/badge/license-GPL--3.0-blue">
 </p>

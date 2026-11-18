@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netanchor-campus"
-version = "0.5.0"
+version = "0.5.1"
 description = "校园网 Dr.COM 断网自动重连（Windows 服务 + 托盘）"
 license = "GPL-3.0-only"
 requires-python = ">=3.12"
