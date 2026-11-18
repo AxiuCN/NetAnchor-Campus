@@ -11,11 +11,16 @@
 
 .PARAMETER IsccPath
     显式指定 ISCC.exe；默认在 Inno Setup 6 安装目录里找。
+
+.PARAMETER Python
+    用来跑 PyInstaller 的解释器，默认 `python`。
+    机器上装了多个 Python 时，指定那个装了 PyInstaller 与依赖的。
 #>
 [CmdletBinding()]
 param(
     [switch]$SkipBuild,
-    [string]$IsccPath
+    [string]$IsccPath,
+    [string]$Python = 'python'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,7 +65,7 @@ Write-Host "简体中文语言文件: $chinese"
 
 if (-not $SkipBuild) {
     Write-Host '构建 onedir ...'
-    & python -m PyInstaller 'build\netanchor.spec' --noconfirm --workpath 'build\work' --distpath 'dist'
+    & $Python -m PyInstaller 'build\netanchor.spec' --noconfirm --workpath 'build\work' --distpath 'dist'
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller 失败（退出码 $LASTEXITCODE）" }
 }
 
@@ -68,6 +73,14 @@ $payload = Join-Path $repo 'dist\NetAnchor-Campus'
 if (-not (Test-Path -LiteralPath (Join-Path $payload 'NetAnchor.Cli.exe'))) {
     throw "打包产物不完整: $payload"
 }
+
+# 只重打安装器（-SkipBuild）时，dist 里可能还是上一版的可执行文件；
+# 那样安装包版本号是新的、里面的程序却是旧的，装完才发现 GUI/行为不对。
+$payloadVersion = (& (Join-Path $payload 'NetAnchor.Cli.exe') --version) -replace '^NetAnchor\.Cli\s+', ''
+if ($payloadVersion.Trim() -ne $version) {
+    throw "打包产物是 $payloadVersion，与源码版本 $version 不一致。请去掉 -SkipBuild 重新构建。"
+}
+Write-Host "打包产物版本: $payloadVersion"
 
 Write-Host '打包安装程序 ...'
 & $iscc "/DAppVersion=$version" 'build\installer.iss'
