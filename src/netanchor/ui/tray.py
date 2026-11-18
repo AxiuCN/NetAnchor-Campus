@@ -1,6 +1,7 @@
 """最小托盘客户端：只做 UI，状态与配置一律经由 IPC 与服务交互。"""
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import sys
@@ -34,6 +35,25 @@ SESSION_WINDOW_CLASS = "NetAnchorSessionEndWatcher"
 TRAY_QUIT_MESSAGE = "NetAnchor-Tray-Quit"
 
 _instance_mutex = None
+
+
+def enable_dpi_awareness() -> None:
+    """声明进程 DPI 感知。
+
+    不做这一步时，125%/150% 缩放下 Windows 会把窗口按位图拉伸，字发虚、
+    控件边缘也糊。必须在创建任何窗口之前调用。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per-monitor
+        return
+    except Exception:  # noqa: BLE001 - 老系统没有 shcore，或已经设置过
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def acquire_single_instance(name: str = SINGLE_INSTANCE_NAME) -> bool:
@@ -328,51 +348,133 @@ class TrayApp:
             return
 
         account = current.get("account", {})
-        candidate = (current.get("portal", {}).get("candidates") or [{}])[0]
+        candidate = current.get("portal", {}).get("candidates") or [{}]
+        candidate = candidate[0]
         monitor = current.get("monitor", {})
 
         root = tk.Tk()
         root.title("NetAnchor-Campus 设置")
         root.resizable(False, False)
-        frame = ttk.Frame(root, padding=16)
-        frame.pack(fill="both", expand=True)
 
-        entries = {}
+        # 按实际 DPI 取字号；窗口本身已声明 DPI 感知，不会再被位图拉伸
+        dpi = root.winfo_fpixels("1i")
+        root.tk.call("tk", "scaling", dpi / 72)
+        base_size = max(9, round(dpi / 96 * 9))
+        family = "Microsoft YaHei UI"
 
-        def row(label: str, value, show=None):
-            holder = ttk.Frame(frame)
-            holder.pack(fill="x", pady=3)
-            ttk.Label(holder, text=label, width=12).pack(side="left")
+        style = ttk.Style(root)
+        for theme in ("vista", "winnative", "clam"):
+            try:
+                style.theme_use(theme)
+                break
+            except tk.TclError:
+                continue
+        style.configure(".", font=(family, base_size))
+        style.configure("Title.TLabel", font=(family, base_size + 4, "bold"))
+        style.configure("Sub.TLabel", font=(family, base_size - 1), foreground="#6b7280")
+        style.configure("Section.TLabel", font=(family, base_size, "bold"), foreground="#374151")
+        style.configure("Hint.TLabel", font=(family, base_size - 1), foreground="#6b7280")
+        style.configure("Field.TLabel", font=(family, base_size))
+
+        # 窗口与标题栏图标
+        art = _base_icon()
+        photos = []
+        if art is not None:
+            try:
+                from PIL import ImageTk
+
+                window_icon = ImageTk.PhotoImage(art.resize((64, 64), Image.LANCZOS))
+                photos.append(window_icon)
+                root.iconphoto(True, window_icon)
+                header_icon = ImageTk.PhotoImage(art.resize((56, 56), Image.LANCZOS))
+                photos.append(header_icon)
+            except Exception:  # noqa: BLE001 - 图标只是装饰，失败不影响设置
+                header_icon = None
+        else:
+            header_icon = None
+
+        pad = max(14, round(dpi / 96 * 14))
+        outer = ttk.Frame(root, padding=(pad, pad, pad, pad))
+        outer.pack(fill="both", expand=True)
+
+        header = ttk.Frame(outer)
+        header.pack(fill="x")
+        if header_icon is not None:
+            ttk.Label(header, image=header_icon).pack(side="left", padx=(0, pad))
+        titles = ttk.Frame(header)
+        titles.pack(side="left", anchor="w")
+        ttk.Label(titles, text="NetAnchor-Campus", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(titles, text="校园网断网自动重连", style="Sub.TLabel").pack(anchor="w")
+
+        ttk.Separator(outer, orient="horizontal").pack(fill="x", pady=(pad, pad // 2))
+
+        entries: dict[str, object] = {}
+
+        def section(title: str) -> ttk.Frame:
+            ttk.Label(outer, text=title, style="Section.TLabel").pack(anchor="w", pady=(pad // 2, 4))
+            box = ttk.Frame(outer)
+            box.pack(fill="x")
+            return box
+
+        def row(box: ttk.Frame, label: str, value, width: int = 30, show=None,
+                expand: bool = True, suffix: str = ""):
+            holder = ttk.Frame(box)
+            holder.pack(fill="x", pady=2)
+            ttk.Label(holder, text=label, width=10, style="Field.TLabel", anchor="w").pack(side="left")
             var = tk.StringVar(value=str(value))
-            ttk.Entry(holder, textvariable=var, width=32, show=show).pack(side="left")
+            entry = ttk.Entry(holder, textvariable=var, width=width, show=show)
+            if expand:
+                entry.pack(side="left", fill="x", expand=True)
+            else:
+                entry.pack(side="left")
+            if suffix:
+                ttk.Label(holder, text=suffix, style="Field.TLabel").pack(side="left", padx=(6, 0))
             return var
 
-        ttk.Label(frame, text="账号", font=("", 10, "bold")).pack(anchor="w")
-        entries["username"] = row("学号", account.get("username", ""))
-        entries["password"] = row("新密码", "", show="*")
+        account_box = section("账号")
+        entries["username"] = row(account_box, "学号", account.get("username", ""))
+        entries["password"] = row(account_box, "新密码", "", show="*")
 
-        carrier_row = ttk.Frame(frame)
-        carrier_row.pack(fill="x", pady=3)
-        ttk.Label(carrier_row, text="运营商", width=12).pack(side="left")
+        carrier_holder = ttk.Frame(account_box)
+        carrier_holder.pack(fill="x", pady=2)
+        ttk.Label(carrier_holder, text="运营商", width=10, style="Field.TLabel", anchor="w").pack(side="left")
         carrier_var = tk.StringVar(value=account.get("carrier", "校园其他"))
-        ttk.Combobox(carrier_row, textvariable=carrier_var, values=list(CARRIER_SUFFIX), state="readonly", width=29).pack(side="left")
+        ttk.Combobox(
+            carrier_holder, textvariable=carrier_var, values=list(CARRIER_SUFFIX),
+            state="readonly", width=28,
+        ).pack(side="left", fill="x", expand=True)
         entries["carrier"] = carrier_var
 
-        ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=10)
-        ttk.Label(frame, text="门户", font=("", 10, "bold")).pack(anchor="w")
-        entries["host"] = row("门户地址", candidate.get("host", ""))
-        entries["login_port"] = row("登录端口", candidate.get("login_port", 80))
-        entries["eportal_port"] = row("取码端口", candidate.get("eportal_port", 801))
+        portal_box = section("门户")
+        entries["host"] = row(portal_box, "门户地址", candidate.get("host", ""))
+        ports = ttk.Frame(portal_box)
+        ports.pack(fill="x", pady=2)
+        ttk.Label(ports, text="端口", width=10, style="Field.TLabel", anchor="w").pack(side="left")
+        login_var = tk.StringVar(value=str(candidate.get("login_port", 80)))
+        eportal_var = tk.StringVar(value=str(candidate.get("eportal_port", 801)))
+        ttk.Label(ports, text="登录", style="Field.TLabel").pack(side="left")
+        ttk.Entry(ports, textvariable=login_var, width=8).pack(side="left", padx=(4, pad))
+        ttk.Label(ports, text="取码", style="Field.TLabel").pack(side="left")
+        ttk.Entry(ports, textvariable=eportal_var, width=8).pack(side="left", padx=(4, 0))
+        entries["login_port"] = login_var
+        entries["eportal_port"] = eportal_var
 
-        ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=10)
-        entries["interval"] = row("检测间隔(秒)", monitor.get("check_interval_seconds", 30))
+        monitor_box = section("监控")
+        entries["interval"] = row(
+            monitor_box, "检测间隔", monitor.get("check_interval_seconds", 30),
+            width=8, expand=False, suffix="秒",
+        )
+        ttk.Label(outer, text="断网后按退避阶梯重试，不会连续轰炸门户。", style="Hint.TLabel").pack(
+            anchor="w", pady=(2, 0)
+        )
 
+        ttk.Separator(outer, orient="horizontal").pack(fill="x", pady=(pad, pad // 2))
         ttk.Label(
-            frame,
-            text="密码以本机加密存储。修改门户地址时，需要同时重新输入密码。",
-            foreground="gray",
-            wraplength=380,
-        ).pack(anchor="w", pady=(8, 0))
+            outer,
+            text="密码以本机加密存储，并与门户地址绑定；修改地址时必须重新输入密码。",
+            style="Hint.TLabel",
+            wraplength=max(320, round(dpi / 96 * 380)),
+        ).pack(anchor="w")
 
         def save() -> None:
             try:
@@ -416,11 +518,18 @@ class TrayApp:
             except ValueError as exc:
                 messagebox.showerror("NetAnchor-Campus", f"输入无效：{exc}")
 
-        buttons = ttk.Frame(frame)
-        buttons.pack(fill="x", pady=(12, 0))
+        buttons = ttk.Frame(outer)
+        buttons.pack(fill="x", pady=(pad, 0))
         ttk.Button(buttons, text="保存", command=save).pack(side="right")
         ttk.Button(buttons, text="取消", command=root.destroy).pack(side="right", padx=(0, 8))
 
+        root.update_idletasks()
+        width = max(root.winfo_width(), max(320, round(dpi / 96 * 380)))
+        height = root.winfo_height()
+        x = (root.winfo_screenwidth() - width) // 2
+        y = max(0, (root.winfo_screenheight() - height) // 3)
+        root.geometry(f"{width}x{height}+{x}+{y}")
+        root._photos = photos  # 防止图片被回收
         root.mainloop()
 
     # ---- 主循环 ----
@@ -527,6 +636,7 @@ def _install_excepthooks() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    enable_dpi_awareness()
     args = list(sys.argv[1:] if argv is None else argv)
     log_dir = tray_log_dir()
     try:
