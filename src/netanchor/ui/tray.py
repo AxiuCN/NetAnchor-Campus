@@ -519,10 +519,15 @@ class TrayApp:
                 message = "配置已保存"
                 if result.get("password_rebound"):
                     message += "，密码已更新"
-                logger.info(
-                    "保存配置：portal_changed=%s password_rebound=%s",
-                    result.get("portal_changed"), result.get("password_rebound"),
-                )
+                # 只输出常量标签：把 result 的字段直接当参数传给日志，
+                # 会被 CodeQL 判成“记录敏感数据”——因为该返回值派生于
+                # 含密码的 IPC 请求，而跨进程边界对分析器是不可见的。
+                changed = []
+                if result.get("portal_changed"):
+                    changed.append("门户地址")
+                if result.get("password_rebound"):
+                    changed.append("密码")
+                logger.info("保存配置：%s", "、".join(changed) + "已变更" if changed else "无变更")
                 messagebox.showinfo("NetAnchor-Campus", message)
                 root.destroy()
             except IpcError as exc:
